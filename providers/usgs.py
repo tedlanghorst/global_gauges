@@ -11,13 +11,10 @@ from .base_provider import BaseProvider
 class UsgsProvider(BaseProvider):
     """Data provider for the USGS National Water Information System (NWIS)."""
 
-    @property
-    def name(self) -> str:
-        return "usgs"
+    name = "usgs"
 
     def download_station_info(self, update: bool = False) -> None:
         """Download and save metadata for all USGS sites with discharge data."""
-        self.data_dir.mkdir(parents=True, exist_ok=True)
         # All sites with discharge data
         sites_list = []
         for huc in range(1, 23):
@@ -99,4 +96,5 @@ class UsgsProvider(BaseProvider):
                 data["date"] = pd.to_datetime(data["datetime"]).dt.date
                 cols = ["site_id", "date", "discharge", "quality_flag"]
                 data[cols].to_sql("discharge", conn, if_exists="append", index=False)
+
         conn.close()

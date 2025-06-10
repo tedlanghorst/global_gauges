@@ -43,12 +43,36 @@ class BaseProvider(ABC):
 
     @abstractmethod
     def download_station_info(self, update: bool = False):
-        """Downloads all necessary data and files for the provider."""
+        """
+        Downloads all necessary station metadata for the provider.
+
+        Output:
+        -------
+        Saves a GeoJSON file at self.station_path with the following columns:
+            - site_id: Unique site identifier (string)
+            - source: Provider/source name (string)
+            - active: Boolean indicating if the site is active
+            - name: Site/station name (string)
+            - area: Drainage area in km^2 (float, may be None)
+            - geometry: Point geometry (longitude, latitude, WGS84/EPSG:4326)
+        The file should be readable by geopandas.read_file(self.station_path) and indexed by 'site_id'.
+        """
         pass
 
     @abstractmethod
     def download_daily_values(self, site_ids: list[str], update: bool = False):
-        """Downloads all necessary data and files for the provider."""
+        """
+        Downloads daily discharge data for the given site_ids and stores it in a SQLite database.
+
+        Output:
+        -------
+        Saves a SQLite database at self.db_path with a table named 'discharge' containing at least:
+            - site_id: Unique site identifier (string)
+            - date: Date of observation (datetime or string, format YYYY-MM-DD)
+            - discharge: Discharge value (float, units: m^3/s)
+        Optionally, additional columns such as 'quality_flag' may be included.
+        The table should be readable by pandas.read_sql_query and support queries by site_id and date.
+        """
         pass
 
     def get_db_age(self) -> int:

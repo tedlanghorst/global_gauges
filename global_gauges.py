@@ -6,7 +6,7 @@ import pandas as pd
 from .providers import PROVIDER_MAP
 
 
-def download_all_data(providers: str | list[str] = None, update: bool = False, workers: int = 1):
+def download_providers(providers: str | list[str] = None, update: bool = False, workers: int = 1):
     """
     Download all data (station info and daily values) for one or more specified providers.
 
@@ -21,8 +21,8 @@ def download_all_data(providers: str | list[str] = None, update: bool = False, w
 
     def worker_fn(p):
         print(f"Downloading data for {p.upper()}")
-        PROVIDER_MAP[p].download_station_info(update=update)
-        PROVIDER_MAP[p].download_daily_values(update=update)
+        PROVIDER_MAP[p].download_station_info(update)
+        PROVIDER_MAP[p].download_daily_values(None, update)
         print(f"Data for {p.upper()} downloaded successfully.")
 
     if workers > 1:
@@ -254,4 +254,4 @@ if __name__ == "__main__":
     arg_dict = vars(parser.parse_args())
 
     # Unpack args dict directly into download_all_data
-    download_all_data(**arg_dict)
+    download_providers(**arg_dict)

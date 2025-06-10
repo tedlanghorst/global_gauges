@@ -20,9 +20,7 @@ from .base_provider import BaseProvider
 class HydatProvider(BaseProvider):
     """Data provider for the Canadian HYDAT hydrometric database."""
 
-    @property
-    def name(self) -> str:
-        return "hydat"
+    name = "hydat"
 
     def download_station_info(self, update: bool = False) -> None:
         if not self.db_path.exists() or update:
@@ -101,6 +99,7 @@ class HydatProvider(BaseProvider):
             }
         )
         gdf = gdf[["site_id", "source", "active", "name", "area", "geometry"]]
+        gdf["site_id"] = gdf["site_id"]
 
         stations_path = self.data_dir / "stations.geojson"
         gdf.to_file(stations_path, driver="GeoJSON")

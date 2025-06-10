@@ -1,5 +1,5 @@
 from .global_gauges import (
-    download_all_data,
+    download_providers,
     download_station_info,
     download_daily_values,
     get_database_age,
@@ -9,7 +9,7 @@ from .global_gauges import (
 )
 
 __all__ = [
-    "download_all_data",
+    "download_providers",
     "download_station_info",
     "download_daily_values",
     "get_database_age",
