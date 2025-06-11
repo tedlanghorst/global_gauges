@@ -22,7 +22,9 @@ def download_providers(providers: str | list[str] = None, update: bool = False, 
     def worker_fn(p):
         print(f"Downloading data for {p.upper()}")
         PROVIDER_MAP[p].download_station_info(update)
-        PROVIDER_MAP[p].download_daily_values(None, update)
+        if p != "hydat":
+            # This dataset is downloaded all at once.
+            PROVIDER_MAP[p].download_daily_values(None, update)
         print(f"Data for {p.upper()} downloaded successfully.")
 
     if workers > 1:

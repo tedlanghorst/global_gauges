@@ -13,17 +13,17 @@ class BaseProvider(ABC):
     Defines the standard interface and file structure for provider implementations.
     """
 
+    name = "base"
+
     def __init__(self):
         """
         Initializes the provider and sets up a data directory under the package's /data dir.
         """
         # Get the package root (one level up from this file)
         package_root = Path(__file__).parent.parent
-        data_root = package_root / "data"
-        data_root.mkdir(exist_ok=True)
         # Each provider gets its own subdirectory
-        self.data_dir = data_root / self.name
-        self.data_dir.mkdir(exist_ok=True)
+        self.data_dir = package_root / "data" / self.name
+        self.data_dir.mkdir(parents=True, exist_ok=True)
 
     @property
     def db_path(self):
@@ -35,19 +35,23 @@ class BaseProvider(ABC):
         """Standardized path to the provider's site geojson database."""
         return self.data_dir / f"{self.name}.geojson"
 
-    @property
-    @abstractmethod
-    def name(self) -> str:
-        """The name of the provider."""
-        pass
-
-    @abstractmethod
     def download_station_info(self, update: bool = False):
         """
-        Downloads all necessary station metadata for the provider.
+        Downloads all necessary station metadata for the provider, with validation.
 
-        Output:
-        -------
+        If the station file already exists and update is False, downloading is skipped.
+        Otherwise, calls the provider-specific _download_station_info().
+        """
+        if self.station_path.exists() and not update:
+            print(f"Station info already exists at {self.station_path}. Skipping download.")
+            return
+        self._download_station_info()
+
+    @abstractmethod
+    def _download_station_info(self):
+        """
+        Provider-specific implementation to download all necessary station metadata.
+
         Saves a GeoJSON file at self.station_path with the following columns:
             - site_id: Unique site identifier (string)
             - source: Provider/source name (string)
@@ -55,23 +59,36 @@ class BaseProvider(ABC):
             - name: Site/station name (string)
             - area: Drainage area in km^2 (float, may be None)
             - geometry: Point geometry (longitude, latitude, WGS84/EPSG:4326)
-        The file should be readable by geopandas.read_file(self.station_path) and indexed by 'site_id'.
         """
         pass
 
-    @abstractmethod
-    def download_daily_values(self, site_ids: list[str], update: bool = False):
+    def download_daily_values(self, site_ids: list[str] = None, update: bool = False):
         """
         Downloads daily discharge data for the given site_ids and stores it in a SQLite database.
+        Handles validation and connection setup. Calls provider-specific _download_daily_values.
+        """
+        # Default site_ids to all available if not provided
+        if not site_ids:  # None or []
+            site_ids = self.get_station_info().index.tolist()
+        # If DB does not exist or update is requested, proceed
+        if not self.db_path.exists() or update:
+            with sqlite3.connect(self.db_path) as conn:
+                self._download_daily_values(site_ids, conn)
+        else:
+            print(
+                f"Database already exists at {self.db_path}. Skipping download. Use update=True to force."
+            )
 
-        Output:
-        -------
+    @abstractmethod
+    def _download_daily_values(self, site_ids: list[str], conn):
+        """
+        Provider-specific implementation to download daily discharge data for the given site_ids.
+
         Saves a SQLite database at self.db_path with a table named 'discharge' containing at least:
             - site_id: Unique site identifier (string)
             - date: Date of observation (datetime or string, format YYYY-MM-DD)
             - discharge: Discharge value (float, units: m^3/s)
         Optionally, additional columns such as 'quality_flag' may be included.
-        The table should be readable by pandas.read_sql_query and support queries by site_id and date.
         """
         pass
 
@@ -137,7 +154,6 @@ class BaseProvider(ABC):
             )
 
         try:
-            conn = sqlite3.connect(self.db_path)
             query = "SELECT * FROM discharge"
             clauses = []
             params = []
@@ -153,8 +169,9 @@ class BaseProvider(ABC):
                 params.append(end_date)
             if clauses:
                 query += " WHERE " + " AND ".join(clauses)
-            df = pd.read_sql_query(query, conn, parse_dates=["date"], params=params)
-            conn.close()
+
+            with sqlite3.connect(self.db_path) as conn:
+                df = pd.read_sql_query(query, conn, parse_dates=["date"], params=params)
 
             df.set_index(["site_id", "date"], inplace=True)
 
@@ -165,3 +182,14 @@ class BaseProvider(ABC):
                 f"Error loading data from SQLite. It is likely that the requested data is missing. "
                 f"Original error: {e}\nTry running download_daily_values() for the sites you need."
             )
+
+    def get_last_entry_date(self, conn: sqlite3.Connection, site_id: str):
+        """
+        Returns the latest date for a given site_id from the specified table.
+        Returns None if no entry exists.
+        """
+        query = "SELECT MAX(date) FROM discharge WHERE site_id=?"
+        result = conn.execute(query, (site_id,)).fetchone()
+        last_date = pd.to_datetime(result[0]) if result and result[0] else None
+
+        return last_date

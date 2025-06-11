@@ -1,5 +1,4 @@
 import requests
-import sqlite3
 from datetime import datetime
 
 from shapely.geometry import Point
@@ -7,7 +6,7 @@ from tqdm.auto import tqdm
 import pandas as pd
 import geopandas as gpd
 
-from .base_provider import BaseProvider
+from ._base import BaseProvider
 
 """
 API Reference
@@ -18,7 +17,7 @@ https://environment.data.gov.uk/hydrology/doc/reference
 class UKEnvironmentAgencyProvider(BaseProvider):
     name = "ukea"
 
-    def download_station_info(self, update=False):
+    def _download_station_info(self):
         BASE_URL = "http://environment.data.gov.uk/hydrology/id/stations.json"
         LIMIT = 100
 
@@ -50,47 +49,22 @@ class UKEnvironmentAgencyProvider(BaseProvider):
         stations = stations.set_crs("EPSG:4326")
         stations.to_file(self.station_path, driver="GeoJSON")
 
-    def download_daily_values(self, site_ids, update=False):
-        print("test1")
-        if site_ids is None:
-            sites = self.get_station_info()
-            site_ids = sites.index.tolist()
-
+    def _download_daily_values(self, site_ids, conn):
         # Get all site_ids that already exist in the database
-        conn = sqlite3.connect(self.db_path)
-        try:
-            existing_site_ids = set(
-                row[0] for row in conn.execute("SELECT DISTINCT site_id FROM discharge").fetchall()
-            )
-        except sqlite3.OperationalError:
-            existing_site_ids = set()
+        end_date = datetime.now()
 
-        print(len(existing_site_ids))
-
-        end_date = datetime.now().strftime("%Y-%m-%d")
         for site_id in tqdm(site_ids):
-            start_date = "1950-01-01"
-
-            if site_id in existing_site_ids:
-                if not update:
-                    # If not updating, skip this site
-                    continue
+            last_date = self.get_last_entry_date(site_id)
+            if last_date:
+                if last_date >= end_date:
+                    continue  # Already up to date
                 else:
-                    # If updating, find the latest date in the database and set start_date to the next day
-                    result = conn.execute(
-                        "SELECT MAX(date) FROM discharge WHERE site_id=?", (site_id,)
-                    ).fetchone()
-                    latest_date = result[0]
-                    start_date = (pd.to_datetime(latest_date) + pd.Timedelta(days=1)).strftime(
-                        "%Y-%m-%d"
-                    )
-                    if start_date > end_date:
-                        continue  # Already up to date
+                    start_date = last_date + pd.Timedelta(days=1)
+            else:
+                start_date = pd.to_datetime("1950-01-01")
 
             data = download_site_dv(site_id, start_date, end_date)
             data.to_sql("discharge", conn, if_exists="append", index=False)
-
-        conn.close()
 
 
 def download_site_dv(site_id: str, start_date: str, end_date) -> pd.DataFrame:
@@ -100,8 +74,8 @@ def download_site_dv(site_id: str, start_date: str, end_date) -> pd.DataFrame:
         "station.wiskiID": site_id,
         "observedProperty": "waterFlow",
         "period": 86400,
-        "mineq-date": start_date,
-        "maxeq-date": end_date,
+        "mineq-date": start_date.strftime("%Y-%m-%d"),
+        "maxeq-date": end_date.strftime("%Y-%m-%d"),
     }
 
     session = requests.Session()

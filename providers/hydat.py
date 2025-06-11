@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 import tempfile
 import os
 
-from .base_provider import BaseProvider
+from ._base import BaseProvider
 
 
 class HydatProvider(BaseProvider):
@@ -22,31 +22,33 @@ class HydatProvider(BaseProvider):
 
     name = "hydat"
 
-    def download_station_info(self, update: bool = False) -> None:
-        if not self.db_path.exists() or update:
-            self._download(update)
+    def _download_station_info(self) -> None:
+        # HYDAT is a single SQLite database, so we download site info and daily values together
+        # The base class handles the update logic, so just call _download with update=True
+        self._download()
 
-    def download_daily_values(self, site_ids: list[str] = None, update: bool = False) -> None:
-        if not self.db_path.exists() or update:
-            self._download(update)
+    def _download_daily_values(self, site_ids: list[str], conn) -> None:
+        self._download()
 
     # HYDAT is a single SQLite database, so we download site info and daily values together
-    def _download(self, update: bool) -> None:
+    def _download(self, conn) -> None:
         """
         Downloads the HYDAT database and extracts it, only if update is True and a newer file is available.
         After extraction, processes DLY_FLOWS into a 'discharge' table matching the standard format.
         """
+        print(
+            "The HYDAT database is retrieved as a zipped sqlite3 database which contains both "
+            "station information and daily values. As such, you only need to call ONE of the "
+            "download methods. Updating the database requires fully downloading new postings of "
+            "the zipped file."
+        )
+
         URL = "https://collaboration.cmc.ec.gc.ca/cmc/hydrometrics/www/"
         db_url, remote_date = _get_latest_url(URL, return_date=True)
 
-        # Check if local file exists and is up to date
-        if self.db_path.exists() and not update:
-            print(
-                "HYDAT database already exists. Skipping download.\n"
-                "If you want to update, set update=True."
-            )
-            return
-        if self.db_path.exists() and update:
+        if self.db_path.exists():
+            # We can only update HYDAT if they have updated the database file on their site.
+            # Most providers we assume they are updated at least daily.
             local_mtime = self.db_path.stat().st_mtime
             local_date = datetime.fromtimestamp(local_mtime, tz=timezone.utc).replace(tzinfo=None)
             if remote_date is not None and local_date >= remote_date:
@@ -80,10 +82,9 @@ class HydatProvider(BaseProvider):
     def _save_station_geojson(self, source_db_path: str) -> None:
         """Save station metadata as a GeoJSON file."""
 
-        con = sqlite3.connect(source_db_path)
-        query = "SELECT * FROM STATIONS"
-        df = pd.read_sql_query(query, con)
-        con.close()
+        with sqlite3.connect(source_db_path) as conn:
+            query = "SELECT * FROM STATIONS"
+            df = pd.read_sql_query(query, conn)
 
         df["geometry"] = df.apply(lambda row: Point(row["LONGITUDE"], row["LATITUDE"]), axis=1)
         gdf = gpd.GeoDataFrame(df, geometry="geometry", crs="EPSG:4326")
@@ -109,17 +110,18 @@ class HydatProvider(BaseProvider):
         Process DLY_FLOWS from HYDAT and write a minimal SQLite db with only the 'discharge' table.
         Processes in chunks to avoid high memory usage.
         """
-
-        # Prepare new minimal SQLite db
-        con_new = sqlite3.connect(self.db_path)
-
         # Read and process in chunks
-        con = sqlite3.connect(source_db_path)
+        source_conn = sqlite3.connect(source_db_path)
         query = "SELECT * FROM DLY_FLOWS"
         daily_cols = [f"FLOW{d}" for d in range(1, 32)]
         first = True
 
-        for df in tqdm(pd.read_sql_query(query, con, chunksize=10000), desc="Processing DLY_FLOWS"):
+        # Prepare new minimal SQLite db
+        new_conn = sqlite3.connect(self.db_path)
+
+        for df in tqdm(
+            pd.read_sql_query(query, source_conn, chunksize=10000), desc="Processing DLY_FLOWS"
+        ):
             if df.empty:
                 continue
             df_long = df.melt(
@@ -137,12 +139,12 @@ class HydatProvider(BaseProvider):
             df_long.rename(columns={"STATION_NUMBER": "site_id"}, inplace=True)
             discharge_df = df_long[["site_id", "date", "discharge"]].copy()
             discharge_df.to_sql(
-                "discharge", con_new, index=False, if_exists="replace" if first else "append"
+                "discharge", new_conn, index=False, if_exists="replace" if first else "append"
             )
             first = False
 
-        con.close()
-        con_new.close()
+        source_conn.close()
+        new_conn.close()
 
 
 def _get_latest_url(URL, return_date=False):
