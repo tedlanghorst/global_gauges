@@ -17,21 +17,20 @@ import os
 from ._base import BaseProvider
 
 
-class HydatProvider(BaseProvider):
+class CanadaProvider(BaseProvider):
     """Data provider for the Canadian HYDAT hydrometric database."""
 
-    name = "hydat"
+    name = "canada"
 
+    # HYDAT is a single SQLite database, so we download site info and daily values together
     def _download_station_info(self) -> None:
-        # HYDAT is a single SQLite database, so we download site info and daily values together
-        # The base class handles the update logic, so just call _download with update=True
         self._download()
 
-    def _download_daily_values(self, site_ids: list[str], conn) -> None:
+    def _download_daily_values(self, site_ids: list[str]) -> None:
         self._download()
 
     # HYDAT is a single SQLite database, so we download site info and daily values together
-    def _download(self, conn) -> None:
+    def _download(self) -> None:
         """
         Downloads the HYDAT database and extracts it, only if update is True and a newer file is available.
         After extraction, processes DLY_FLOWS into a 'discharge' table matching the standard format.
@@ -90,7 +89,7 @@ class HydatProvider(BaseProvider):
         gdf = gpd.GeoDataFrame(df, geometry="geometry", crs="EPSG:4326")
 
         # Now setup columns to match other sources
-        gdf["source"] = "hydat"
+        gdf["source"] = self.name
         gdf["active"] = gdf["HYD_STATUS"] == "A"
         gdf = gdf.rename(
             columns={
@@ -100,10 +99,8 @@ class HydatProvider(BaseProvider):
             }
         )
         gdf = gdf[["site_id", "source", "active", "name", "area", "geometry"]]
-        gdf["site_id"] = gdf["site_id"]
 
-        stations_path = self.data_dir / "stations.geojson"
-        gdf.to_file(stations_path, driver="GeoJSON")
+        gdf.to_file(self.station_path, driver="GeoJSON")
 
     def _process_dly_flows_to_discharge(self, source_db_path: str):
         """
@@ -117,7 +114,7 @@ class HydatProvider(BaseProvider):
         first = True
 
         # Prepare new minimal SQLite db
-        new_conn = sqlite3.connect(self.db_path)
+        new_conn = self.connect_to_db()
 
         for df in tqdm(
             pd.read_sql_query(query, source_conn, chunksize=10000), desc="Processing DLY_FLOWS"
@@ -144,7 +141,6 @@ class HydatProvider(BaseProvider):
             first = False
 
         source_conn.close()
-        new_conn.close()
 
 
 def _get_latest_url(URL, return_date=False):

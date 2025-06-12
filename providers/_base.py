@@ -15,25 +15,29 @@ class BaseProvider(ABC):
 
     name = "base"
 
-    def __init__(self):
+    def __init__(self, data_dir: str | Path):
         """
         Initializes the provider and sets up a data directory under the package's /data dir.
         """
-        # Get the package root (one level up from this file)
-        package_root = Path(__file__).parent.parent
-        # Each provider gets its own subdirectory
-        self.data_dir = package_root / "data" / self.name
+        self.data_dir = Path(data_dir) / self.name
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
-    @property
-    def db_path(self):
-        """Standardized path to the provider's daily SQLite database."""
-        return self.data_dir / f"{self.name}.sqlite3"
+        self.db_path = self.data_dir / f"{self.name}.sqlite3"
+        self.station_path = self.data_dir / f"{self.name}.geojson"
 
-    @property
-    def station_path(self):
-        """Standardized path to the provider's site geojson database."""
-        return self.data_dir / f"{self.name}.geojson"
+        self._conn = None  # Lazy connection
+
+    def connect_to_db(self):
+        """
+        Returns an open SQLite connection. Opens it if not already open.
+        """
+        if self._conn is None:
+            self._conn = sqlite3.connect(self.db_path)
+        return self._conn
+
+    def __del__(self):
+        if self._conn:
+            self._conn.close()
 
     def download_station_info(self, update: bool = False):
         """
@@ -44,6 +48,7 @@ class BaseProvider(ABC):
         """
         if self.station_path.exists() and not update:
             print(f"Station info already exists at {self.station_path}. Skipping download.")
+            print("Set update=True if you want to redownload station data.")
             return
         self._download_station_info()
 
@@ -70,17 +75,17 @@ class BaseProvider(ABC):
         # Default site_ids to all available if not provided
         if not site_ids:  # None or []
             site_ids = self.get_station_info().index.tolist()
+
         # If DB does not exist or update is requested, proceed
         if not self.db_path.exists() or update:
-            with sqlite3.connect(self.db_path) as conn:
-                self._download_daily_values(site_ids, conn)
+            self._download_daily_values(site_ids)
         else:
             print(
-                f"Database already exists at {self.db_path}. Skipping download. Use update=True to force."
+                f"Database already exists at {self.db_path}. Skipping download. Use update=True to force update."
             )
 
     @abstractmethod
-    def _download_daily_values(self, site_ids: list[str], conn):
+    def _download_daily_values(self, site_ids: list[str]):
         """
         Provider-specific implementation to download daily discharge data for the given site_ids.
 
@@ -152,6 +157,7 @@ class BaseProvider(ABC):
             raise FileNotFoundError(
                 f"SQLite database not found at {self.db_path}. Run download() or download_daily_values() first."
             )
+        conn = self.connect_to_db()
 
         try:
             query = "SELECT * FROM discharge"
@@ -170,9 +176,7 @@ class BaseProvider(ABC):
             if clauses:
                 query += " WHERE " + " AND ".join(clauses)
 
-            with sqlite3.connect(self.db_path) as conn:
-                df = pd.read_sql_query(query, conn, parse_dates=["date"], params=params)
-
+            df = pd.read_sql_query(query, conn, parse_dates=["date"], params=params)
             df.set_index(["site_id", "date"], inplace=True)
 
             return df
@@ -189,7 +193,11 @@ class BaseProvider(ABC):
         Returns None if no entry exists.
         """
         query = "SELECT MAX(date) FROM discharge WHERE site_id=?"
-        result = conn.execute(query, (site_id,)).fetchone()
-        last_date = pd.to_datetime(result[0]) if result and result[0] else None
+        try:
+            result = conn.execute(query, (site_id,)).fetchone()
+            last_date = pd.to_datetime(result[0]) if result and result[0] else None
+        except sqlite3.DatabaseError:
+            # If the db is empty. Returning None indicates that all data needs downloaded.
+            last_date = None
 
         return last_date

@@ -7,10 +7,14 @@ from tqdm.auto import tqdm
 from ._base import BaseProvider
 
 
-class UsgsProvider(BaseProvider):
-    """Data provider for the USGS National Water Information System (NWIS)."""
+class USAProvider(BaseProvider):
+    """Data provider for the USGS National Water Information System (NWIS).
 
-    name = "usgs"
+    Accessed through the `dataretrieval` package by the USGS.
+    https://github.com/DOI-USGS/dataretrieval-python
+    """
+
+    name = "usa"
 
     def _download_station_info(self) -> None:
         """Download and save metadata for all USGS sites with discharge data."""
@@ -40,11 +44,12 @@ class UsgsProvider(BaseProvider):
 
         sites.to_file(self.station_path, driver="GeoJSON")
 
-    def _download_daily_values(self, site_ids: list[str], conn):
+    def _download_daily_values(self, site_ids: list[str]):
         """
         Download daily discharge data for the given site_ids and store in a SQLite database.
         If update=True, download and append new data for each site (after the latest date in the DB).
         """
+        conn = self.connect_to_db()
         end_date = datetime.now()
 
         for site_id in tqdm(site_ids):

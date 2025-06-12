@@ -15,5 +15,8 @@ wheels/
 # Downloads
 data/
 
+# providers that are broken.
+providers/defunct/
+
 # Virtual environments
 .venv

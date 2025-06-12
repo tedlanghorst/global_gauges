@@ -8,14 +8,16 @@ import geopandas as gpd
 
 from ._base import BaseProvider
 
-"""
-API Reference
-https://environment.data.gov.uk/hydrology/doc/reference
-"""
 
+class UKProvider(BaseProvider):
+    """
+    Data provider for the UK Environment Agency's hydrology data.
 
-class UKEnvironmentAgencyProvider(BaseProvider):
-    name = "ukea"
+    API reference:
+    https://environment.data.gov.uk/hydrology/doc/reference
+    """
+
+    name = "uk"
 
     def _download_station_info(self):
         BASE_URL = "http://environment.data.gov.uk/hydrology/id/stations.json"
@@ -49,8 +51,9 @@ class UKEnvironmentAgencyProvider(BaseProvider):
         stations = stations.set_crs("EPSG:4326")
         stations.to_file(self.station_path, driver="GeoJSON")
 
-    def _download_daily_values(self, site_ids, conn):
+    def _download_daily_values(self, site_ids):
         # Get all site_ids that already exist in the database
+        conn = self.connect_to_db()
         end_date = datetime.now()
 
         for site_id in tqdm(site_ids):
