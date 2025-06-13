@@ -1,5 +1,5 @@
 # Global Gauges Python Package
-An interface for downloading, updating, and querying river gauge data from multiple providers. This package is focused on mantaining a local database of up-to-date river discharge from global providers. Currently, only the USGS and HYDAT are implemented, but other agencies or organizations with API access to current data can be easily added using the BaseProviders class. 
+An interface for downloading, updating, and querying river gauge data from multiple providers. This package is focused on mantaining a local database of up-to-date river discharge from global providers. Currently, only the United States, Canada, United Kingdom, and Australian services are implemented, but other agencies or organizations with API access to current data can be easily added using the BaseProviders class. 
 
 ## Features
 - Download and update station metadata and daily discharge data from supported providers
@@ -24,50 +24,44 @@ conda activate global-gauges
 pip install .
 ```
 
-## Example Use
-Import the package and use the high-level API:
+## Python interface
 
+### Getting started
 ```python
 import global_gauges as gg
 
-# Download all data for all providers
-gg.download_all_data()
+# The first time you use global_gauges you must tell the package where to store your data.
+# This path will be saved to config file. If you want to change this path, just call the function again.
+gg.set_default_data_dir("/path/to/data/dir")
 
-# Update the local database from provider APIs
-gg.download_all_data(update=True)
+# Next you need to create a GlobalGaugesFacade object
+facade = gg.GaugeDataFacade()
 
-# Download only station info for USGS
-gg.download_station_info('usgs')
+# Now you can easily download all supported station metadata and time series.
+# If you specify a number of workers, the facade will use parallel workers for each data provider.
+facade.download(workers=4)
 
-# Download daily values for specific sites
-gg.download_daily_values(providers='hydat', sites=['01AB002', '02BC003'])
+# facade.get_daily_values() will return a pandas dataframe for any site(s) in the database
+df = facade.get_daily_values(['USGS-01010070','USGS-01010500'])
 
-# Query station metadata
-df = gg.get_station_info(['usgs', 'hydat'])
+# You can also query a shorter timeseries by specifying start and/or end dates
+df = facade.get_daily_values('USGS-01010070', '2020-01-01', '2020-12-31')
 
-# Query daily values for a date range
-dv = gg.get_daily_values(providers='usgs', sites='06892350', start_date='2020-01-01', end_date='2020-12-31')
-
-# Get only active stations
-df_active = gg.get_active_stations('hydat')
-
-# Check database age
-ages = gg.get_database_age()
 ```
 
-## Command Line Usage
+### Updating
+```python
+# global_gauges is designed to make it easy to maintain an up-to-date database.
+# GaugeDataFacade() will automatically warn you if any of your databases are >30 days old.
+# You can also easily access the date of modification of your local copy each provider's data
+ages = facade.get_database_ages()
 
-You can also download data directly from the command line after installing the package:
+# You can easily update your databases
+facade.download_daily_values(update=True)
 
-
-Example:
-
-```bash
-python -m global_gauges download_all_data
 ```
-```bash
-python -m global_gauges download_all_data --update --provider usgs
-```
+
+For more details, see the code and docstrings in `global_gauges.py`.
 
 
 ## License
