@@ -1,9 +1,9 @@
-from datetime import datetime
-
 import pandas as pd
+import geopandas as gpd
 import dataretrieval.nwis as nwis
 
 from ._base import BaseProvider
+from ._dmodel import QualityFlag
 
 
 class USGSProvider(BaseProvider):
@@ -15,15 +15,18 @@ class USGSProvider(BaseProvider):
 
     name = "usgs"
     # https://help.waterdata.usgs.gov/codes-and-parameters/daily-value-qualification-code-dv_rmk_cd
+    # TODO use new 'ESTIMATED' enum. Maybe change < and > to suspect.
     quality_map = {
-        "A": "good",
-        "P": "provisional",
-        "e": "suspect",
-        "Ice": "bad",
-        "Fld": "bad",
-        "Eqp": "bad",
-        "<": "bad",
-        ">": "bad",
+        "A": QualityFlag.GOOD,
+        "P": QualityFlag.PROVISIONAL,
+        "e": QualityFlag.ESTIMATED,
+        "&": QualityFlag.ESTIMATED,
+        "E": QualityFlag.ESTIMATED,
+        "<": QualityFlag.SUSPECT,
+        ">": QualityFlag.SUSPECT,
+        "Ice": QualityFlag.BAD,
+        "Fld": QualityFlag.BAD,
+        "Eqp": QualityFlag.BAD,
     }
 
     def _download_station_info(self) -> pd.DataFrame:
@@ -36,11 +39,10 @@ class USGSProvider(BaseProvider):
         sites = pd.concat(sites_list, ignore_index=True)
 
         # Now setup columns to match other sources
-        sites = sites.to_crs("EPSG:4326")
+        sites = gpd.GeoDataFrame(sites).to_crs("EPSG:4326")
         sites["area"] = sites["drain_area_va"] * (1.60934**2)  # mi2 to km2
-        sites = sites.rename(
-            columns={"agency_cd": "source", "site_no": "site_id", "station_nm": "name"}
-        )
+        sites["active"] = False
+        sites = sites.rename(columns={"site_no": "site_id", "station_nm": "name"})
 
         # Extract latitude and longitude from geometry column
         sites["latitude"] = sites.geometry.y
@@ -48,39 +50,31 @@ class USGSProvider(BaseProvider):
 
         return sites
 
-    def _download_daily_values(self, site_id: str):
+    def _download_daily_values(self, site_id: str, start: pd.Timestamp, misc: dict) -> pd.DataFrame:
         """
         Download daily discharge data for the given site_ids and store in a SQLite database.
         If update=True, download and append new data for each site (after the latest date in the DB).
         """
-        end_date = datetime.now()
-
-        last_date = self.get_last_updated(site_id)
-        if last_date:
-            start_date = last_date + pd.Timedelta(days=1)
-            if start_date >= end_date:
-                return
-        else:
-            start_date = pd.to_datetime("1950-01-01")
+        end = pd.Timestamp.now().date()
 
         data, _ = nwis.get_dv(
             sites=site_id,
-            start=start_date.strftime("%Y-%m-%d"),
-            end=end_date.strftime("%Y-%m-%d"),
+            start=start.strftime("%Y-%m-%d"),
+            end=end.strftime("%Y-%m-%d"),
             parameterCd="00060",
         )
-        if not data.empty and "00060_Mean" in data.columns:
-            data = data.reset_index()
-            data = data.rename(
-                columns={
-                    "site_no": "site_id",
-                    "00060_Mean": "discharge",
-                    "00060_Mean_cd": "quality_flag",
-                    "datetime": "datetime",
-                }
-            )
-            data["discharge"] *= 0.3048**3  # ft3 to m3
-            data["date"] = pd.to_datetime(data["datetime"]).dt.date
-            return data[["site_id", "date", "discharge", "quality_flag"]]
-        else:
+
+        if data.empty or "00060_Mean" not in data.columns:
             return None
+
+        data = data.reset_index()
+        data = data.rename(
+            columns={
+                "site_no": "site_id",
+                "00060_Mean": "discharge",
+                "00060_Mean_cd": "quality_flag",
+            }
+        )
+        data["discharge"] *= 0.3048**3  # ft3 to m3
+        data["date"] = pd.to_datetime(data["datetime"]).dt.date
+        return data[["site_id", "date", "discharge", "quality_flag"]]

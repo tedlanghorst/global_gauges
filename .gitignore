@@ -16,7 +16,7 @@ wheels/
 data/
 
 # providers that are broken.
-providers/defunct/
+providers/broken/
 
 # Virtual environments
 .venv

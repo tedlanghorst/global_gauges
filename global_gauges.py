@@ -1,4 +1,5 @@
 import json
+import logging
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -59,6 +60,17 @@ class GaugeDataFacade:
                 "No data_dir provided and no default set. "
                 "Please provide a data_dir or call set_default_data_dir()."
             )
+
+        # Set up logging
+        log_dir = self.logs_dir = self.data_dir / "_logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        logging.basicConfig(
+            filename=log_dir / (pd.Timestamp.now().isoformat(timespec="minutes") + ".log"),
+            level=logging.WARNING,
+            format="%(asctime)s - %(levelname)s - %(message)s",
+            force=True,
+        )
+
         self.providers = self._make_provider_map(providers)
 
         age_days = self.get_database_ages()
@@ -76,7 +88,7 @@ class GaugeDataFacade:
         for p in to_remove:
             # Throws a KeyError if p is not found.
             self.providers.pop(p)
-            
+
     def set_providers(self, providers: str | list[str] = None):
         self.providers = self._make_provider_map(providers)
 
@@ -84,14 +96,16 @@ class GaugeDataFacade:
         providers = self._validate_providers(providers)
         return {name: PROVIDER_MAP[name](self.data_dir) for name in providers}
 
-    def download(self, providers: str | list[str] = None, workers: int = 1, update: bool = False):
+    def download(
+        self, providers: str | list[str] = None, workers: int = 1, force_update: bool = False
+    ):
         if providers:
             self.set_providers(providers)
 
         def worker_fn(p):
-            self.providers[p].download_station_info(update)
+            self.providers[p].download_station_info(force_update)
             if p != "hydat":
-                self.providers[p].download_daily_values(None)
+                self.providers[p].download_daily_values(None, force_update)
 
         if workers > 1:
             with ThreadPoolExecutor(max_workers=workers) as executor:
@@ -106,13 +120,13 @@ class GaugeDataFacade:
                 worker_fn(p)
 
     def download_station_info(
-        self, providers: str | list[str] = None, workers: int = 1, update: bool = False
+        self, providers: str | list[str] = None, workers: int = 1, force_update: bool = False
     ):
         if providers:
             self.set_providers(providers)
 
         def worker_fn(p):
-            self.providers[p].download_station_info(update)
+            self.providers[p].download_station_info(force_update)
 
         if workers > 1:
             with ThreadPoolExecutor(max_workers=workers) as executor:
@@ -130,29 +144,31 @@ class GaugeDataFacade:
         self,
         providers: str | list[str] = None,
         sites: str | list[str] = None,
+        force_update: bool = True,
         workers: int = 1,
     ):
         if providers:
             self.set_providers(providers)
-        sites = self._validate_sites(sites)
 
-        def worker_fn(p):
-            self.providers[p].download_daily_values(sites)
+        sites_dict = self._preprocess_sites(sites)
+
+        def worker_fn(_p, _s):
+            self.providers[_p].download_daily_values(_s, force_update)
 
         if workers > 1:
             with ThreadPoolExecutor(max_workers=workers) as executor:
-                futures = [executor.submit(worker_fn, p) for p in self.providers]
+                futures = [executor.submit(worker_fn, p, s) for p, s in sites_dict.items()]
                 for future in as_completed(futures):
                     try:
                         future.result()
                     except Exception as exc:
                         print(f"A provider download failed: {exc}")
         else:
-            for p in self.providers:
-                worker_fn(p)
+            for p, s in sites_dict.items():
+                worker_fn(p, s)
 
     def get_database_ages(self) -> dict[str, int]:
-        ages = {p: self.providers[p].get_db_age() for p in self.providers}
+        ages = {p: self.providers[p].get_database_age_days() for p in self.providers}
         return ages
 
     def get_station_info(self) -> pd.DataFrame:
@@ -234,6 +250,11 @@ class GaugeDataFacade:
         return dict(provider_sites_map)
 
 
+"""
+CLI interface for downloading.
+"""
+
+
 class Config:
     @staticmethod
     def set_data_dir(path: str):
@@ -244,22 +265,22 @@ class Config:
 
 class Download:
     @staticmethod
-    def all(providers=None, workers=1, update=False):
+    def all(providers=None, workers=1, force_update=False):
         """Download all data (station info and timeseries)."""
         downloader = GaugeDataFacade(providers=providers)
-        downloader.download(update=update, workers=workers)
+        downloader.download(force_update=force_update, workers=workers)
 
     @staticmethod
-    def stations(providers=None, workers=1, update=False):
+    def stations(providers=None, workers=1, force_update=False):
         """Download only station info."""
         downloader = GaugeDataFacade(providers=providers)
-        downloader.download_station_info(update=update, workers=workers)
+        downloader.download_station_info(force_update=force_update, workers=workers)
 
     @staticmethod
-    def timeseries(providers=None, workers=1):
+    def timeseries(providers=None, workers=1, force_update=False):
         """Download only timeseries data."""
         downloader = GaugeDataFacade(providers=providers)
-        downloader.download_daily_values(workers=workers)
+        downloader.download_daily_values(workers=workers, force_update=force_update)
 
 
 if __name__ == "__main__":
