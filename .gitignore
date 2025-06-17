@@ -12,11 +12,8 @@ wheels/
 # Jupyter Notebook checkpoints
 .ipynb_checkpoints/
 
-# Downloads
-data/
-
 # providers that are broken.
-providers/broken/
+/global_gauges/providers/broken/
 
 # Virtual environments
 .venv
