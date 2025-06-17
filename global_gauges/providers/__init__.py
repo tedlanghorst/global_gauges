@@ -1,3 +1,4 @@
+from ._base import BaseProvider
 from .abom import ABOMProvider
 from .eccc import ECCCProvider
 from .hubeau import HubeauProvider
@@ -12,3 +13,5 @@ PROVIDER_MAP = {
     "ukea": UKEAProvider,
     "usgs": USGSProvider,
 }
+
+__all__ = ["PROVIDER_MAP", "BaseProvider"]

@@ -9,7 +9,7 @@ import pandas as pd
 import geopandas as gpd
 import fire
 
-from .providers import PROVIDER_MAP
+from .providers import PROVIDER_MAP, BaseProvider
 
 
 CONFIG_DIR = Path(user_config_dir("global_gauges"))
@@ -47,6 +47,9 @@ def set_default_data_dir(path: str | Path):
 
 
 class GaugeDataFacade:
+    providers: dict[str, BaseProvider]
+    
+
     def __init__(
         self,
         data_dir: str | Path = None,
@@ -72,7 +75,7 @@ class GaugeDataFacade:
             force=True,
         )
 
-        self.providers = self._make_provider_map(providers)
+        self.providers = self.set_providers(providers)
 
         age_days = self.get_database_ages()
         for name, age in age_days.items():
@@ -106,12 +109,9 @@ class GaugeDataFacade:
             # Throws a KeyError if p is not found.
             self.providers.pop(p)
 
-    def set_providers(self, providers: str | list[str] = None):
-        self.providers = self._make_provider_map(providers)
-
-    def _make_provider_map(self, providers):
+    def set_providers(self, providers):
         providers = self._validate_providers(providers)
-        return {name: PROVIDER_MAP[name](self.data_dir) for name in providers}
+        self.providers =  {name: PROVIDER_MAP[name](self.data_dir) for name in providers}
 
     def download(
         self, providers: str | list[str] = None, workers: int = 1, force_update: bool = False
@@ -119,21 +119,9 @@ class GaugeDataFacade:
         if providers:
             self.set_providers(providers)
 
-        def worker_fn(p):
-            self.providers[p].download_station_info(force_update)
-            self.providers[p].download_daily_values(None, force_update)
-
-        if workers > 1:
-            with ThreadPoolExecutor(max_workers=workers) as executor:
-                futures = [executor.submit(worker_fn, p) for p in self.providers]
-                for future in as_completed(futures):
-                    try:
-                        future.result()
-                    except Exception as exc:
-                        print(f"A provider download failed: {exc}")
-        else:
-            for p in self.providers:
-                worker_fn(p)
+        # Now use None for providers to keep what we just set. 
+        self.download_station_info(None, workers, force_update)
+        self.download_daily_values(None, None, workers, force_update)
 
     def download_station_info(
         self, providers: str | list[str] = None, workers: int = 1, force_update: bool = False
@@ -141,56 +129,39 @@ class GaugeDataFacade:
         if providers:
             self.set_providers(providers)
 
-        def worker_fn(p):
-            self.providers[p].download_station_info(force_update)
+        def worker_fn(provider: BaseProvider):
+            provider.download_station_info(force_update)
 
-        if workers > 1:
-            with ThreadPoolExecutor(max_workers=workers) as executor:
-                futures = [executor.submit(worker_fn, p) for p in self.providers]
-                for future in as_completed(futures):
-                    try:
-                        future.result()
-                    except Exception as exc:
-                        print(f"A provider download failed: {exc}")
-        else:
-            for p in self.providers:
-                worker_fn(p)
+        args_iter = [(provider,) for provider in self.providers.values()]
+        self._run_workers(worker_fn, args_iter, workers)
 
     def download_daily_values(
         self,
         providers: str | list[str] = None,
         sites: str | list[str] = None,
-        force_update: bool = True,
         workers: int = 1,
+        force_update: bool = True,
     ):
         if providers:
             self.set_providers(providers)
 
         sites_dict = self._preprocess_sites(sites)
 
-        def worker_fn(_p, _s):
-            self.providers[_p].download_daily_values(_s, force_update)
+        def worker_fn(provider: BaseProvider, p_sites: list):
+            provider.download_daily_values(p_sites, force_update)
 
-        if workers > 1:
-            with ThreadPoolExecutor(max_workers=workers) as executor:
-                futures = [executor.submit(worker_fn, p, s) for p, s in sites_dict.items()]
-                for future in as_completed(futures):
-                    try:
-                        future.result()
-                    except Exception as exc:
-                        print(f"A provider download failed: {exc}")
-        else:
-            for p, s in sites_dict.items():
-                worker_fn(p, s)
+        args_iter = list(sites_dict.items()) 
+        self._run_workers(worker_fn, args_iter, workers)
+
 
     def get_database_ages(self) -> dict[str, int]:
-        ages = {p: self.providers[p].get_database_age_days() for p in self.providers}
+        ages = {name: provider.get_database_age_days() for name, provider in self.providers.items()}
         return ages
 
     def get_station_info(self) -> gpd.GeoDataFrame:
         provider_info = []
-        for name in self.providers:
-            p_stations = self.providers[name].get_station_info()
+        for name, provider in self.providers.items():
+            p_stations = provider.get_station_info()
             p_stations["provider"] = name
             provider_info.append(p_stations)
 
@@ -236,8 +207,22 @@ class GaugeDataFacade:
             raise TypeError("Providers must be of type None, str, list, or set.")
 
         return providers
+    
+    def _run_workers(self, worker_fn, args_iter, workers):
+        """Helper to run worker_fn over args_iter with optional threading."""
+        if workers > 1:
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                futures = [executor.submit(worker_fn, *args) for args in args_iter]
+                for future in as_completed(futures):
+                    try:
+                        future.result()
+                    except Exception as exc:
+                        print(f"A provider download failed: {exc}")
+        else:
+            for args in args_iter:
+                worker_fn(*args)
 
-    def _preprocess_sites(self, sites: str | list[str] | None) -> dict[str, list[str]] | None:
+    def _preprocess_sites(self, sites: str | list[str] | None) -> dict[BaseProvider, list[str]]:
         if sites is None:
             # Return a dict with all active providers and None for sites, indicating all sites
             return {p: None for p in self.providers}
@@ -259,13 +244,14 @@ class GaugeDataFacade:
                     "Expected format is '<PROVIDER>-<station_id>'."
                 )
 
-            if provider_name not in self.providers:
+            provider = self.providers.get(provider_name)
+            if provider is None:
                 raise ValueError(
                     f"Provider '{provider_name}' from site_id '{site_id}' is not in the "
                     f"list of active providers: {list(self.providers)}"
                 )
 
-            provider_sites_map[provider_name].append(site_id)
+            provider_sites_map[provider].append(site_id)
 
         return dict(provider_sites_map)
 

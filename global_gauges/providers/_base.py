@@ -33,8 +33,7 @@ class BaseProvider(ABC):
 
     def __del__(self):
         """Ensure database connections are properly closed."""
-        if hasattr(self, "db_manager"):
-            self.db_manager.close_conn()
+        self.db_manager.close_conn()
 
     @classmethod
     def add_provider_prefix(cls, site_id: str | list[str]) -> str | list[str]:
@@ -141,15 +140,9 @@ class BaseProvider(ABC):
         """
         pass
 
-    def get_station_info(self, site_ids: list[str] = None) -> gpd.GeoDataFrame:
+    def get_station_info(self, site_ids: list[str] | None = None) -> gpd.GeoDataFrame:
         """
         Get station metadata as GeoDataFrame.
-
-        Args:
-            site_ids: Optional list of site IDs to filter by
-
-        Returns:
-            GeoDataFrame with station metadata and geometries
         """
         metadata_list = self.db_manager.get_site_metadata(site_ids)
 
