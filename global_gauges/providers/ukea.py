@@ -3,7 +3,7 @@ import requests
 import pandas as pd
 
 from ._base import BaseProvider
-from ._dmodel import QualityFlag
+from ..database import QualityFlag
 
 
 class UKEAProvider(BaseProvider):
@@ -59,7 +59,7 @@ class UKEAProvider(BaseProvider):
 
         guid = misc["guid"]
         guid = guid[0] if isinstance(guid, list) else guid
-        
+
         base_url = "http://environment.data.gov.uk/hydrology/id/measures/"
         full_url = base_url + guid + "-flow-m-86400-m3s-qualified/readings"
         params = {

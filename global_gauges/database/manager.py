@@ -1,156 +1,35 @@
-import logging
-import math
 import json
-from datetime import datetime
 from pathlib import Path
-from typing import Optional, Any
-from enum import Enum
+# from functools import wraps
+from typing import Optional
 
 import duckdb
 import pandas as pd
-from shapely.geometry import Point
-from pydantic import BaseModel, Field, field_validator, ConfigDict
 
+from .models import SiteMetadata, DischargeRecord
 
-class QualityFlag(str, Enum):
-    """
-    Enumeration of possible data quality flags.
+# def with_connection(write: bool = False):
+#     """
+#     A decorator to manage database connections for a method.
 
-    Provider class implementations need to decide and define how each provider's
-    specific quality notation maps on to these options.
-    """
-
-    GOOD = "good"
-    PROVISIONAL = "provisional"
-    ESTIMATED = "estimated"
-    SUSPECT = "suspect"
-    BAD = "bad"
-    UNKNOWN = "unknown"
-
-
-class SiteMetadata(BaseModel):
-    """
-    Pydantic model representing site metadata in the database.
-
-    This model ensures type safety and validation for all site metadata operations.
-    All database interactions should use this model for consistency.
-    """
-
-    model_config = ConfigDict(
-        extra="ignore",
-        use_enum_values=True,
-        validate_assignment=True,
-    )
-
-    site_id: str = Field(..., description="Unique site identifier with provider prefix")
-    name: str = Field(..., description="Human-readable site/station name")
-    area: Optional[float] = Field(None, description="Drainage area in km²", ge=0)
-    active: Optional[bool] = Field(False, description="Whether the site is currently active")
-    latitude: float = Field(..., description="Latitude in WGS84", ge=-90, le=90)
-    longitude: float = Field(..., description="Longitude in WGS84", ge=-180, le=180)
-
-    # Timestamps and data range information
-    last_updated: Optional[datetime] = Field(None, description="When data was last fetched")
-    min_date: Optional[datetime] = Field(None, description="Earliest data date available")
-    max_date: Optional[datetime] = Field(None, description="Latest data date available")
-
-    # Discharge statistics
-    min_discharge: Optional[float] = Field(None, description="Minimum discharge (m³/s)", ge=0)
-    max_discharge: Optional[float] = Field(None, description="Maximum discharge (m³/s)", ge=0)
-    mean_discharge: Optional[float] = Field(None, description="Mean discharge (m³/s)", ge=0)
-    count_discharge: Optional[int] = Field(None, description="Number of discharge records", ge=0)
-
-    provider_misc: Optional[dict[str, Any]] = Field(
-        default=None, description="Provider-specific metadata as a JSON-compatible dict"
-    )
-
-    @field_validator("area", mode="before")
-    @classmethod
-    def sanitize_area(cls, v, info):
-        # Handle NaN
-        if isinstance(v, float) and math.isnan(v):
-            return None
-
-        # Handle negative numbers
-        if isinstance(v, (int, float)) and v < 0:
-            # Log the bad data for monitoring purposes
-            logging.warning(
-                f"Negative area '{v}' encountered for site_id '{info.data.get('site_id', 'N/A')}'."
-            )
-            return None
-
-        return v
-
-    @field_validator("min_discharge", "max_discharge", "mean_discharge", mode="before")
-    @classmethod
-    def validate_positive_discharge(cls, v, info):
-        """Ensure discharge values are non-negative. Returns the value if valid."""
-        if isinstance(v, (int, float)) and v < 0:
-            # Log the bad data for monitoring purposes
-            logging.warning(
-                f"Negative discharge '{v}' encountered for site_id '{info.data.get('site_id', 'N/A')}'."
-            )
-            return None
-        return v
-
-    def get_geometry(self) -> Point:
-        """Create a Shapely Point geometry from coordinates."""
-        return Point(self.longitude, self.latitude)
-
-
-class DischargeRecord(BaseModel):
-    """
-    Pydantic model representing a single discharge measurement.
-
-    This model ensures all discharge data follows the same structure
-    and provides validation for data quality.
-    """
-
-    model_config = ConfigDict(use_enum_values=True, validate_assignment=True)
-
-    site_id: str = Field(..., description="Site identifier (with provider prefix)")
-    date: datetime = Field(..., description="Date of measurement")
-    discharge: float = Field(..., description="Discharge value in m³/s", ge=0)
-    quality_flag: Optional[QualityFlag] = Field(
-        QualityFlag.UNKNOWN, description="Data quality indicator"
-    )
-
-    @field_validator("discharge", mode="before")
-    @classmethod
-    def validate_discharge_positive(cls, v):
-        """Ensure discharge values are non-negative. Returns the value if valid."""
-        if isinstance(v, (int, float)) and v < 0:
-            # # Log the bad data for monitoring purposes
-            # logging.warning(
-            #     f"Negative discharge '{v}' encountered for site_id '{info.data.get('site_id', 'N/A')}'."
-            # )
-            return None
-        return v
-
-
-class DatabaseConfig(BaseModel):
-    """Configuration for database operations."""
-
-    model_config = ConfigDict(validate_assignment=True)
-
-    provider_name: str = Field(..., description="Name of the data provider")
-    data_directory: Path = Field(..., description="Base data directory")
-
-    @property
-    def provider_data_dir(self) -> Path:
-        """Get the provider-specific data directory."""
-        return self.data_directory / self.provider_name
-
-    @property
-    def database_path(self) -> Path:
-        """Get the path to the DuckDB database file."""
-        return self.provider_data_dir / f"{self.provider_name}.duckdb"
-
-
-# =============================================================================
-# DATABASE OPERATIONS CLASS
-# =============================================================================
-
+#     Opens a connection before the method is called and ensures it's closed
+#     afterward. It passes the connection object as a 'conn' keyword
+#     argument to the decorated method.
+#     """
+#     def decorator(func: Callable) -> Callable:
+#         @wraps(func)
+#         def wrapper(self: 'DuckDBManager', *args: Any, **kwargs: Any) -> Any:
+#             # Get the appropriate connection
+#             conn = self.get_conn(write=write)
+#             try:
+#                 # Call the original method, passing the connection in
+#                 result = func(self, *args, conn=conn, **kwargs)
+#                 return result
+#             finally:
+#                 # Always close the connection
+#                 self.close_conn()
+#         return wrapper
+#     return decorator
 
 class DatabaseManager:
     """
@@ -160,33 +39,52 @@ class DatabaseManager:
     consistent use of Pydantic models throughout.
     """
 
-    def __init__(self, config: DatabaseConfig):
-        self.config = config
-        self._connection: Optional[duckdb.DuckDBPyConnection] = None
-
+    def __init__(self, data_dir: Path, provider_name: str):
         # Create data directory
-        self.config.provider_data_dir.mkdir(parents=True, exist_ok=True)
+        provider_data_dir = data_dir / provider_name
+        provider_data_dir.mkdir(parents=True, exist_ok=True)
 
-    def get_connection(self) -> duckdb.DuckDBPyConnection:
+        self.database_path = provider_data_dir / f"{provider_name}.duckdb"
+
+        self._write_conn: Optional[duckdb.DuckDBPyConnection] = None
+        self._read_conn: Optional[duckdb.DuckDBPyConnection] = None
+
+        self._initialize_tables()
+
+    def get_conn(self, write=True) -> duckdb.DuckDBPyConnection:
         """Get database connection, creating if necessary."""
-        if self._connection is None:
-            self._connection = duckdb.connect(str(self.config.database_path))
-            self._initialize_tables()
-        return self._connection
+        if write:
+            if self._write_conn:
+                return self._write_conn
+            else:
+                self.close_conn()  # In case _read_conn is open
+                self._write_conn = duckdb.connect(self.database_path)
+                return self._write_conn
+        else:
+            if self._read_conn:
+                return self._read_conn
+            else:
+                self.close_conn()  # In case _write_conn is open
+                self._read_conn = duckdb.connect(self.database_path, read_only=True)
+                return self._read_conn
 
-    def close(self):
-        """Close database connection."""
-        if self._connection:
-            self._connection.close()
-            self._connection = None
+    def close_conn(self):
+        """Close database connection(s)."""
+        if self._write_conn:
+            self._write_conn.close()
+            self._write_conn = None
+
+        if self._read_conn:
+            self._read_conn.close()
+            self._read_conn = None
 
     def __del__(self):
         """Ensure connection is closed when object is destroyed."""
-        self.close()
+        self.close_conn()
 
     def _initialize_tables(self):
         """Create database tables if they don't exist."""
-        conn = self.get_connection()
+        conn = self.get_conn(write=True)
 
         # Create site_metadata table
         conn.execute("""
@@ -229,6 +127,8 @@ class DatabaseManager:
             ON site_metadata(active)
         """)
 
+        self.close_conn()
+
     def store_site_metadata(self, metadata: SiteMetadata | list[SiteMetadata]):
         """
         Store site metadata in database.
@@ -236,7 +136,7 @@ class DatabaseManager:
         Args:
             metadata: Single SiteMetadata object or list of SiteMetadata objects
         """
-        conn = self.get_connection()
+        conn = self.get_conn(write=True)
 
         if isinstance(metadata, SiteMetadata):
             metadata = [metadata]
@@ -246,8 +146,8 @@ class DatabaseManager:
         df = pd.DataFrame(data_dicts)
 
         # DuckDB requires a proper JSON string, not a Python dict's string representation.
-        if 'provider_misc' in df.columns:
-            df['provider_misc'] = df['provider_misc'].apply(
+        if "provider_misc" in df.columns:
+            df["provider_misc"] = df["provider_misc"].apply(
                 lambda x: json.dumps(x) if isinstance(x, dict) else None
             )
 
@@ -257,6 +157,8 @@ class DatabaseManager:
             INSERT OR REPLACE INTO site_metadata
             SELECT * FROM metadata_temp
         """)
+
+        self.close_conn()
 
     def get_site_metadata(self, site_ids: Optional[list[str]] = None) -> list[SiteMetadata]:
         """
@@ -268,7 +170,7 @@ class DatabaseManager:
         Returns:
             List of SiteMetadata objects
         """
-        conn = self.get_connection()
+        conn = self.get_conn()
 
         if site_ids:
             placeholders = ",".join(["?"] * len(site_ids))
@@ -294,6 +196,8 @@ class DatabaseManager:
 
             metadata_list.append(SiteMetadata(**row_dict))
 
+        self.close_conn()
+
         return metadata_list
 
     def store_discharge_data(self, records: DischargeRecord | list[DischargeRecord]):
@@ -303,7 +207,7 @@ class DatabaseManager:
         Args:
             records: Single DischargeRecord or list of DischargeRecord objects
         """
-        conn = self.get_connection()
+        conn = self.get_conn(write=True)
 
         if isinstance(records, DischargeRecord):
             records = [records]
@@ -319,6 +223,8 @@ class DatabaseManager:
             SELECT * FROM discharge_temp
         """)
 
+        self.close_conn()
+
     def get_discharge_data(
         self, site_ids: list[str], start_date: Optional[str] = None, end_date: Optional[str] = None
     ) -> list[DischargeRecord]:
@@ -333,7 +239,7 @@ class DatabaseManager:
         Returns:
             List of DischargeRecord objects
         """
-        conn = self.get_connection()
+        conn = self.get_conn()
 
         # Build query with optional date filters
         clauses = []
@@ -367,6 +273,8 @@ class DatabaseManager:
                 row_dict["date"] = pd.to_datetime(row_dict["date"])
             records.append(DischargeRecord(**row_dict))
 
+        self.close_conn()
+
         return records
 
     def update_site_statistics(self, site_id: str):
@@ -376,7 +284,7 @@ class DatabaseManager:
         Args:
             site_id: Site identifier to update statistics for
         """
-        conn = self.get_connection()
+        conn = self.get_conn(write=True)
 
         # Calculate statistics from discharge data
         stats_df = conn.execute(
@@ -397,6 +305,7 @@ class DatabaseManager:
         ).fetchdf()
 
         if stats_df.empty:
+            self.close_conn()
             return
 
         stats_row = stats_df.iloc[0]
@@ -426,3 +335,5 @@ class DatabaseManager:
                 site_id,
             ),
         )
+
+        self.close_conn()

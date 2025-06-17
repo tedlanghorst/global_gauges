@@ -6,9 +6,10 @@ from pathlib import Path
 
 from platformdirs import user_config_dir
 import pandas as pd
+import geopandas as gpd
 import fire
 
-from providers import PROVIDER_MAP
+from .providers import PROVIDER_MAP
 
 
 CONFIG_DIR = Path(user_config_dir("global_gauges"))
@@ -78,6 +79,22 @@ class GaugeDataFacade:
             if age > 30:
                 print(f"Warning: {name.upper()} database is {age} days old. Consider updating.")
 
+    def __str__(self) -> str:
+        """Returns a user-friendly string representation of the facade."""
+        provider_names = ", ".join(p.upper() for p in self.providers.keys())
+        if not provider_names:
+            provider_names = "None"
+        return (
+            f"GaugeDataFacade\n"
+            f"  Data Directory: {self.data_dir}\n"
+            f"  Active Providers: {provider_names}"
+        )
+
+    def __repr__(self) -> str:
+        """Returns an unambiguous string representation of the facade."""
+        provider_names = list(self.providers.keys())
+        return f"GaugeDataFacade(data_dir='{self.data_dir!s}', providers={provider_names})"
+
     def add_providers(self, to_add: str | list[str]):
         to_add = self._validate_providers(to_add)
         for p in to_add:
@@ -104,8 +121,7 @@ class GaugeDataFacade:
 
         def worker_fn(p):
             self.providers[p].download_station_info(force_update)
-            if p != "hydat":
-                self.providers[p].download_daily_values(None, force_update)
+            self.providers[p].download_daily_values(None, force_update)
 
         if workers > 1:
             with ThreadPoolExecutor(max_workers=workers) as executor:
@@ -171,10 +187,14 @@ class GaugeDataFacade:
         ages = {p: self.providers[p].get_database_age_days() for p in self.providers}
         return ages
 
-    def get_station_info(self) -> pd.DataFrame:
-        provider_info = [self.providers[p].get_station_info() for p in self.providers]
-        gdf = pd.concat([df for df in provider_info if df is not None and not df.empty])
-        return gdf
+    def get_station_info(self) -> gpd.GeoDataFrame:
+        provider_info = []
+        for name in self.providers:
+            p_stations = self.providers[name].get_station_info()
+            p_stations["provider"] = name
+            provider_info.append(p_stations)
+
+        return pd.concat(provider_info)
 
     def get_active_stations(self) -> pd.DataFrame:
         gdf = self.get_station_info()

@@ -4,7 +4,7 @@ from io import StringIO
 import pandas as pd
 
 from ._base import BaseProvider
-from ._dmodel import QualityFlag
+from ..database import QualityFlag
 
 
 class ABOMProvider(BaseProvider):

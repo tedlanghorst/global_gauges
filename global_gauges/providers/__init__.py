@@ -1,5 +1,6 @@
 from .abom import ABOMProvider
 from .eccc import ECCCProvider
+from .hubeau import HubeauProvider
 from .ukea import UKEAProvider
 from .usgs import USGSProvider
 
@@ -7,6 +8,7 @@ from .usgs import USGSProvider
 PROVIDER_MAP = {
     "abom": ABOMProvider,
     "eccc": ECCCProvider,
+    "hubeau": HubeauProvider,
     "ukea": UKEAProvider,
     "usgs": USGSProvider,
 }

@@ -7,7 +7,7 @@ import pandas as pd
 import geopandas as gpd
 from pydantic import ValidationError
 
-from ._dmodel import QualityFlag, SiteMetadata, DischargeRecord, DatabaseConfig, DatabaseManager
+from ..database import QualityFlag, SiteMetadata, DischargeRecord, DatabaseManager
 
 
 class BaseProvider(ABC):
@@ -29,13 +29,12 @@ class BaseProvider(ABC):
         Args:
             data_dir: Base directory for all provider data
         """
-        self.config = DatabaseConfig(provider_name=self.name, data_directory=Path(data_dir))
-        self.db_manager = DatabaseManager(self.config)
+        self.db_manager = DatabaseManager(Path(data_dir), self.name)
 
     def __del__(self):
         """Ensure database connections are properly closed."""
         if hasattr(self, "db_manager"):
-            self.db_manager.close()
+            self.db_manager.close_conn()
 
     @classmethod
     def add_provider_prefix(cls, site_id: str | list[str]) -> str | list[str]:
@@ -118,6 +117,8 @@ class BaseProvider(ABC):
 
         if validated_models:
             self.db_manager.store_site_metadata(validated_models)
+            for metadata in validated_models:
+                self.db_manager.update_site_statistics(metadata.site_id)
             print(f"Stored metadata for {len(validated_models)} stations.")
 
         if invalid_count > 0:
@@ -206,11 +207,13 @@ class BaseProvider(ABC):
         print(f"Updating {len(sites_to_update)} sites for {self.name.upper()}...")
 
         # Download data for each site
-        for site_id, start_date in tqdm(sites_to_update.items(), desc="Downloading daily values"):
-            raw_site_id = self.remove_provider_prefix(site_id)
+        for site_id, start_date in tqdm(
+            sites_to_update.items(), desc=f"{self.name.upper()}: downloading daily values"
+        ):
+            stripped_site_id = self.remove_provider_prefix(site_id)
             # Call provider-specific implementation
             provider_misc = metadata.loc[site_id]["provider_misc"]
-            daily_data = self._download_daily_values(raw_site_id, start_date, provider_misc)
+            daily_data = self._download_daily_values(stripped_site_id, start_date, provider_misc)
 
             # Update last_updated timestamp regardless of whether data was found
             self._update_last_fetched(site_id)

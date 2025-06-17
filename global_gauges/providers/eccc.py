@@ -4,7 +4,7 @@ import io
 import pandas as pd
 
 from ._base import BaseProvider
-from ._dmodel import QualityFlag
+from ..database import QualityFlag
 
 
 class ECCCProvider(BaseProvider):
@@ -15,11 +15,11 @@ class ECCCProvider(BaseProvider):
     quality_map = {
         "FINAL": QualityFlag.GOOD,
         "PROVISIONAL": QualityFlag.PROVISIONAL,
-        10: QualityFlag.SUSPECT,
-        20: QualityFlag.ESTIMATED,
-        30: QualityFlag.SUSPECT,
-        40: QualityFlag.BAD,
-        -1: QualityFlag.UNKNOWN,
+        "10": QualityFlag.SUSPECT,
+        "20": QualityFlag.ESTIMATED,
+        "30": QualityFlag.SUSPECT,
+        "40": QualityFlag.BAD,
+        "-1": QualityFlag.UNKNOWN,
     }
 
     def _download_station_info(self) -> pd.DataFrame:
@@ -62,8 +62,8 @@ class ECCCProvider(BaseProvider):
         params = {
             "stations[]": site_id,
             "parameters[]": 47,  # Discharge
-            "start_date": start.strftime("%Y-%m-%d") + "00:00:00",
-            "end_date": end.strftime("%Y-%m-%d") + "23:59:59",
+            "start_date": start.strftime("%Y-%m-%d") + " 00:00:00",
+            "end_date": end.strftime("%Y-%m-%d") + " 23:59:59",
         }
         response = requests.get(base_url, params=params)
         response.raise_for_status()
@@ -72,10 +72,16 @@ class ECCCProvider(BaseProvider):
         if len(response.text.strip().split("\n")) <= 1:
             return
 
-        df = pd.read_csv(io.StringIO(response.text))
-        df.rename(columns={"Value/Valeur": "discharge"}, inplace=True)
+        df = pd.read_csv(io.StringIO(response.text), low_memory=False)
+        # Really annoying bug (?) where the returned field has a space before 'ID'
+        df.rename(columns={" ID": "site_id", "Value/Valeur": "discharge"}, inplace=True)
         df["date"] = pd.to_datetime(df["Date"]).dt.date
-        # If there is no qualifier tag, use the approval status for quality_flag
-        df["quality_flag"] = df["Qualifier/Qualificatif"].fillna(df["Approval/Approbation"])
 
-        return df[["site_id", "date", "discharge", "quality_flag"]]
+        # If there is no qualifier tag, use the approval status for quality_flag
+        combined_qual = df["Qualifier/Qualificatif"].fillna(df["Approval/Approbation"])
+        df["quality_flag"] = combined_qual.map(lambda x: f"{x:.0f}" if isinstance(x, float) else x)
+
+        agg_dict = {"site_id": "first", "discharge": "mean", "quality_flag": "first"}
+        daily_df = df.groupby("date").agg(agg_dict).reset_index()
+
+        return daily_df
