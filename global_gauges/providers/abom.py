@@ -2,6 +2,7 @@ import requests
 from io import StringIO
 
 import pandas as pd
+import aiohttp
 
 from ._base import BaseProvider
 from ..database import QualityFlag
@@ -59,7 +60,9 @@ class ABOMProvider(BaseProvider):
 
         return df[["site_id", "name", "latitude", "longitude"]]
 
-    def _download_daily_values(self, site_id: str, start: pd.Timestamp, misc: dict) -> pd.DataFrame:
+    async def _download_daily_values(
+        self, site_id: str, start: pd.Timestamp, misc: dict
+    ) -> pd.DataFrame:
         """Downloads daily discharge data for Australian sites."""
         end = pd.Timestamp.now().date()
 
@@ -74,22 +77,28 @@ class ABOMProvider(BaseProvider):
             "to": end.strftime("%Y-%m-%d"),
             "returnfields": "Timestamp,Value,Quality Code",
         }
-        response = requests.get(base_url, params=params)
-        response.raise_for_status()
 
-        json_data = response.json()[0]
-        column_names = json_data["columns"].split(",")
-        data_string = "\n".join([",".join(map(str, row)) for row in json_data["data"]])
-        df = pd.read_csv(StringIO(data_string), names=column_names)
+        async with aiohttp.ClientSession() as session:
+            async with session.get(base_url, params=params) as response:
+                response.raise_for_status()
+                json_data = await response.json()
 
-        # Convert data types
-        df["Timestamp"] = pd.to_datetime(df["Timestamp"]).dt.date
-        df["Value"] = pd.to_numeric(df["Value"])
+                column_names = json_data[0]["columns"].split(",")
+                data_string = "\n".join([",".join(map(str, row)) for row in json_data[0]["data"]])
+                df = pd.read_csv(StringIO(data_string), names=column_names)
 
-        df.rename(
-            columns={"Timestamp": "date", "Value": "discharge", "Quality Code": "quality_flag"},
-            inplace=True,
-        )
-        df["site_id"] = site_id
+                # Convert data types
+                df["Timestamp"] = pd.to_datetime(df["Timestamp"]).dt.date
+                df["Value"] = pd.to_numeric(df["Value"])
 
-        return df
+                df.rename(
+                    columns={
+                        "Timestamp": "date",
+                        "Value": "discharge",
+                        "Quality Code": "quality_flag",
+                    },
+                    inplace=True,
+                )
+                df["site_id"] = site_id
+
+                return df

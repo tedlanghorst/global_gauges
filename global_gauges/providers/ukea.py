@@ -1,6 +1,7 @@
 import requests
 
 import pandas as pd
+import aiohttp
 
 from ._base import BaseProvider
 from ..database import QualityFlag
@@ -54,29 +55,32 @@ class UKEAProvider(BaseProvider):
 
         return pd.DataFrame(all_data)
 
-    def _download_daily_values(self, site_id: str, start: pd.Timestamp, misc: dict) -> pd.DataFrame:
+    async def _download_daily_values(
+        self, site_id: str, start: pd.Timestamp, misc: dict
+    ) -> pd.DataFrame:
         end = pd.Timestamp.now()
 
         guid = misc["guid"]
         guid = guid[0] if isinstance(guid, list) else guid
 
         base_url = "http://environment.data.gov.uk/hydrology/id/measures/"
-        full_url = base_url + guid + "-flow-m-86400-m3s-qualified/readings"
+        site_url = base_url + guid + "-flow-m-86400-m3s-qualified/readings"
         params = {
             "mineq-date": start.strftime("%Y-%m-%d"),
             "maxeq-date": end.strftime("%Y-%m-%d"),
-            "_limit": 100000,
+            "_limit": 100000,  # 273 years should be fine... Need to paginate if we do multiple sites.
         }
+        async with aiohttp.ClientSession() as session:
+            async with session.get(site_url, params=params) as response:
+                response.raise_for_status()
+                json_data = await response.json()
 
-        response = requests.get(full_url, params)
-        response.raise_for_status()
+                df = pd.DataFrame(json_data["items"])
 
-        df = pd.DataFrame(response.json()["items"])
+                if df.empty:
+                    return pd.DataFrame()
 
-        if df.empty:
-            return None
+                df.rename(columns={"value": "discharge", "quality": "quality_flag"}, inplace=True)
+                df["site_id"] = site_id
 
-        df.rename(columns={"value": "discharge", "quality": "quality_flag"}, inplace=True)
-        df["site_id"] = site_id
-
-        return df[["site_id", "date", "discharge", "quality_flag"]]
+                return df[["site_id", "date", "discharge", "quality_flag"]]

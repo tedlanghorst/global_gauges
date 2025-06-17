@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+
 # from functools import wraps
 from typing import Optional
 
@@ -30,6 +31,7 @@ from .models import SiteMetadata, DischargeRecord
 #                 self.close_conn()
 #         return wrapper
 #     return decorator
+
 
 class DatabaseManager:
     """

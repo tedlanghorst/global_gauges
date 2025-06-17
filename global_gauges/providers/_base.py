@@ -1,8 +1,9 @@
 from abc import ABC, abstractmethod
+import asyncio
 from pathlib import Path
 import logging
 
-from tqdm.auto import tqdm
+from tqdm.asyncio import tqdm
 import pandas as pd
 import geopandas as gpd
 from pydantic import ValidationError
@@ -20,6 +21,7 @@ class BaseProvider(ABC):
 
     # Subclasses must override these
     name: str = "base"
+    desc: str = "Base Provider Class"
     quality_map: dict[str, QualityFlag] = {}
 
     def __init__(self, data_dir: str | Path):
@@ -161,18 +163,7 @@ class BaseProvider(ABC):
         gdf = gpd.GeoDataFrame(df, geometry=geometries, crs="EPSG:4326")
         return gdf.set_index("site_id")
 
-    def download_daily_values(self, site_ids: list[str] = None, force_update: bool = False):
-        """
-        Download daily discharge data for specified sites.
-
-        Args:
-            site_ids: Optional list of site IDs. If None, downloads for all sites.
-        """
-        # Get all available metadata
-        metadata = self.get_station_info()
-        if metadata is None:
-            raise ValueError("No station metadata available. Run download_station_info() first.")
-
+    def _get_sites_to_update(self, metadata, site_ids, force_update) -> dict[str : pd.Timestamp]:
         # Use all sites if none specified
         if site_ids is None:
             site_ids = metadata.index.to_list()
@@ -199,27 +190,49 @@ class BaseProvider(ABC):
 
         print(f"Updating {len(sites_to_update)} sites for {self.name.upper()}...")
 
-        # Download data for each site
-        for site_id, start_date in tqdm(
-            sites_to_update.items(), desc=f"{self.name.upper()}: downloading daily values"
-        ):
-            stripped_site_id = self.remove_provider_prefix(site_id)
-            # Call provider-specific implementation
-            provider_misc = metadata.loc[site_id]["provider_misc"]
-            daily_data = self._download_daily_values(stripped_site_id, start_date, provider_misc)
+        return sites_to_update
+
+    async def download_daily_values(self, site_ids: list[str] = None, force_update: bool = False):
+        """
+        Download daily discharge data for specified sites.
+
+        Args:
+            site_ids: Optional list of site IDs. If None, downloads for all sites.
+        """
+        metadata = self.get_station_info()
+        if metadata is None:
+            raise ValueError("No station metadata available. Run download_station_info() first.")
+
+        sites_to_update = self._get_sites_to_update(metadata, site_ids, force_update)
+
+        # This semaphore ensures only ONE _download_daily_values coroutine can run at a time.
+        semaphore = asyncio.Semaphore(1)
+
+        async def download_and_process_site(site_id, start_date):
+            """Worker task for a single site."""
+            async with semaphore:
+                # Semaphore ensures only one task can enter this block at a time.
+                daily_data = await self._download_daily_values(
+                    self.remove_provider_prefix(site_id),
+                    start_date,
+                    metadata.loc[site_id]["provider_misc"],
+                )
+            # Semaphore is RELEASED here. The event loop can now schedule the next download
+            # while we process and insert this data into database.
 
             # Update last_updated timestamp regardless of whether data was found
             self._update_last_fetched(site_id)
 
             # We're done with this site if we found nothing.
-            if daily_data is None or daily_data.empty:
-                continue
+            assert isinstance(daily_data, pd.DataFrame)  # Helps static type checker
+            if daily_data.empty:
+                return
 
             # Apply the provider-specific quality mapping.
             daily_data["quality_flag"] = (
                 daily_data["quality_flag"].map(self.quality_map).fillna("unknown")
             )
-            # Pre filter to remove most pydantic validation errors.
+            # Pre filter discharge to remove most validation errors.
             daily_data = daily_data[daily_data["discharge"] > 0]
 
             # Convert DataFrame to a list of dictionaries for efficient validation
@@ -253,11 +266,16 @@ class BaseProvider(ABC):
                     f"Removed {invalid_count} entries from {site_id} due to validation errors."
                 )
                 logging.warning(warning_str)
-                print(warning_str)
+
+        # Create and run all tasks concurrently (again, semaphore prevents crushing the provider API)
+        tasks = [
+            download_and_process_site(site_id, start) for site_id, start in sites_to_update.items()
+        ]
+        await tqdm.gather(*tasks, desc=f"{self.name.upper()}: processing sites")
 
     def _update_last_fetched(self, site_id: str):
         """Update the last_updated timestamp for a site."""
-        conn = self.db_manager.get_connection()
+        conn = self.db_manager.get_conn(write=True)
         conn.execute(
             """
             UPDATE site_metadata 
@@ -266,9 +284,10 @@ class BaseProvider(ABC):
         """,
             (pd.Timestamp.now().date().isoformat(), site_id),
         )
+        self.db_manager.close_conn()
 
     @abstractmethod
-    def _download_daily_values(self, site_id: str) -> pd.DataFrame:
+    async def _download_daily_values(self, site_id: str) -> pd.DataFrame:
         """
         Provider-specific implementation to download daily discharge data.
 

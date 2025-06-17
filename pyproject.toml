@@ -4,8 +4,9 @@ version = "0.1.0"
 description = "A package for downloading and querying river discharge data."
 readme = "README.md"
 requires-python = ">=3.12"
-license = {text = "GPL-3.0-or-later"}
+license = "GPL-3.0-or-later"
 dependencies = [
+    "aiohttp>=3.12.13",
     "beautifulsoup4>=4.13.4",
     "dataretrieval>=1.0.12",
     "duckdb>=1.3.0",
@@ -21,5 +22,12 @@ dependencies = [
     "tqdm>=4.67.1",
 ]
 
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["global_gauges"]
+exclude = ["notebooks"]
+
+
 [tool.ruff]
 line-length = 100
+exclude = ["notebooks"]

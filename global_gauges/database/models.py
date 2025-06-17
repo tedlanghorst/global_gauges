@@ -122,4 +122,3 @@ class DischargeRecord(BaseModel):
             # )
             return None
         return v
-

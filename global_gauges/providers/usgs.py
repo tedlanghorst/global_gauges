@@ -1,3 +1,5 @@
+import asyncio
+
 import pandas as pd
 import geopandas as gpd
 import dataretrieval.nwis as nwis
@@ -58,10 +60,10 @@ class USGSProvider(BaseProvider):
 
         return sites[["site_id", "name", "area", "active", "latitude", "longitude"]]
 
-    def _download_daily_values(self, site_id: str, start: pd.Timestamp, misc: dict) -> pd.DataFrame:
+    def _nwis_sync_get(self, site_id: str, start: pd.Timestamp) -> pd.DataFrame:
         """
-        Download daily discharge data for the given site_ids and store in a SQLite database.
-        If update=True, download and append new data for each site (after the latest date in the DB).
+        Calls the synchronous nwis.get_dv method. Have to contain it here so that
+        we can wrap it in an async.to_thread call
         """
         end = pd.Timestamp.now().date()
 
@@ -73,7 +75,7 @@ class USGSProvider(BaseProvider):
         )
 
         if data.empty or "00060_Mean" not in data.columns:
-            return None
+            return pd.DataFrame()
 
         data = data.reset_index()
         data = data.rename(
@@ -86,3 +88,11 @@ class USGSProvider(BaseProvider):
         data["discharge"] *= 0.3048**3  # ft3 to m3
         data["date"] = pd.to_datetime(data["datetime"]).dt.date
         return data[["site_id", "date", "discharge", "quality_flag"]]
+
+    async def _download_daily_values(
+        self, site_id: str, start: pd.Timestamp, misc: dict
+    ) -> pd.DataFrame:
+        """Download daily discharge data for the given site_ids."""
+        df = await asyncio.to_thread(self._nwis_sync_get, site_id, start)
+
+        return df

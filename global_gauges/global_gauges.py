@@ -1,5 +1,6 @@
 import json
 import logging
+import asyncio
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -48,7 +49,6 @@ def set_default_data_dir(path: str | Path):
 
 class GaugeDataFacade:
     providers: dict[str, BaseProvider]
-    
 
     def __init__(
         self,
@@ -75,7 +75,7 @@ class GaugeDataFacade:
             force=True,
         )
 
-        self.providers = self.set_providers(providers)
+        self.set_providers(providers)
 
         age_days = self.get_database_ages()
         for name, age in age_days.items():
@@ -84,13 +84,11 @@ class GaugeDataFacade:
 
     def __str__(self) -> str:
         """Returns a user-friendly string representation of the facade."""
-        provider_names = ", ".join(p.upper() for p in self.providers.keys())
-        if not provider_names:
-            provider_names = "None"
+        providers_str = "\n".join(f"    {k}: {v.desc}" for k, v in self.providers.items())
         return (
             f"GaugeDataFacade\n"
             f"  Data Directory: {self.data_dir}\n"
-            f"  Active Providers: {provider_names}"
+            f"  Active Providers:\n" + providers_str
         )
 
     def __repr__(self) -> str:
@@ -111,7 +109,7 @@ class GaugeDataFacade:
 
     def set_providers(self, providers):
         providers = self._validate_providers(providers)
-        self.providers =  {name: PROVIDER_MAP[name](self.data_dir) for name in providers}
+        self.providers = {name: PROVIDER_MAP[name](self.data_dir) for name in providers}
 
     def download(
         self, providers: str | list[str] = None, workers: int = 1, force_update: bool = False
@@ -119,7 +117,7 @@ class GaugeDataFacade:
         if providers:
             self.set_providers(providers)
 
-        # Now use None for providers to keep what we just set. 
+        # Now use None for providers to keep what we just set.
         self.download_station_info(None, workers, force_update)
         self.download_daily_values(None, None, workers, force_update)
 
@@ -148,11 +146,10 @@ class GaugeDataFacade:
         sites_dict = self._preprocess_sites(sites)
 
         def worker_fn(provider: BaseProvider, p_sites: list):
-            provider.download_daily_values(p_sites, force_update)
+            asyncio.run(provider.download_daily_values(p_sites, force_update))
 
-        args_iter = list(sites_dict.items()) 
+        args_iter = list(sites_dict.items())
         self._run_workers(worker_fn, args_iter, workers)
-
 
     def get_database_ages(self) -> dict[str, int]:
         ages = {name: provider.get_database_age_days() for name, provider in self.providers.items()}
@@ -178,8 +175,7 @@ class GaugeDataFacade:
         sites_dict = self._preprocess_sites(sites)
 
         provider_dfs = [
-            self.providers[_p].get_daily_data(_s, start_date, end_date)
-            for _p, _s in sites_dict.items()
+            p.get_daily_data(p_sites, start_date, end_date) for p, p_sites in sites_dict.items()
         ]
         if provider_dfs:
             return pd.concat(provider_dfs)
@@ -207,7 +203,7 @@ class GaugeDataFacade:
             raise TypeError("Providers must be of type None, str, list, or set.")
 
         return providers
-    
+
     def _run_workers(self, worker_fn, args_iter, workers):
         """Helper to run worker_fn over args_iter with optional threading."""
         if workers > 1:
@@ -225,7 +221,7 @@ class GaugeDataFacade:
     def _preprocess_sites(self, sites: str | list[str] | None) -> dict[BaseProvider, list[str]]:
         if sites is None:
             # Return a dict with all active providers and None for sites, indicating all sites
-            return {p: None for p in self.providers}
+            return {provider: None for provider in self.providers.values()}
 
         if isinstance(sites, str):
             sites = [sites]

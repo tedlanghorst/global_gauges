@@ -2,6 +2,7 @@ import requests
 
 import io
 import pandas as pd
+import aiohttp
 
 from ._base import BaseProvider
 from ..database import QualityFlag
@@ -55,7 +56,9 @@ class ECCCProvider(BaseProvider):
 
         return df
 
-    def _download_daily_values(self, site_id: str, start: pd.Timestamp, misc: dict) -> pd.DataFrame:
+    async def _download_daily_values(
+        self, site_id: str, start: pd.Timestamp, misc: dict
+    ) -> pd.DataFrame:
         end = pd.Timestamp.now().date()
 
         base_url = "https://wateroffice.ec.gc.ca/services/real_time_data/csv/inline"
@@ -65,23 +68,27 @@ class ECCCProvider(BaseProvider):
             "start_date": start.strftime("%Y-%m-%d") + " 00:00:00",
             "end_date": end.strftime("%Y-%m-%d") + " 23:59:59",
         }
-        response = requests.get(base_url, params=params)
-        response.raise_for_status()
+        async with aiohttp.ClientSession() as session:
+            async with session.get(base_url, params=params) as response:
+                response.raise_for_status()
+                text_data = await response.text()
 
-        # If there's only one line (the header), there's no data.
-        if len(response.text.strip().split("\n")) <= 1:
-            return
+                # If there's only one line (the header), there's no data.
+                if len(text_data.strip().split("\n")) <= 1:
+                    return pd.DataFrame()
 
-        df = pd.read_csv(io.StringIO(response.text), low_memory=False)
-        # Really annoying bug (?) where the returned field has a space before 'ID'
-        df.rename(columns={" ID": "site_id", "Value/Valeur": "discharge"}, inplace=True)
-        df["date"] = pd.to_datetime(df["Date"]).dt.date
+                df = pd.read_csv(io.StringIO(text_data), low_memory=False)
+                # Really annoying bug (?) where the returned field has a space before 'ID'
+                df.rename(columns={" ID": "site_id", "Value/Valeur": "discharge"}, inplace=True)
+                df["date"] = pd.to_datetime(df["Date"]).dt.date
 
-        # If there is no qualifier tag, use the approval status for quality_flag
-        combined_qual = df["Qualifier/Qualificatif"].fillna(df["Approval/Approbation"])
-        df["quality_flag"] = combined_qual.map(lambda x: f"{x:.0f}" if isinstance(x, float) else x)
+                # If there is no qualifier tag, use the approval status for quality_flag
+                combined_qual = df["Qualifier/Qualificatif"].fillna(df["Approval/Approbation"])
+                df["quality_flag"] = combined_qual.map(
+                    lambda x: f"{x:.0f}" if isinstance(x, float) else x
+                )
 
-        agg_dict = {"site_id": "first", "discharge": "mean", "quality_flag": "first"}
-        daily_df = df.groupby("date").agg(agg_dict).reset_index()
+                agg_dict = {"site_id": "first", "discharge": "mean", "quality_flag": "first"}
+                daily_df = df.groupby("date").agg(agg_dict).reset_index()
 
-        return daily_df
+                return daily_df
