@@ -112,17 +112,21 @@ class GaugeDataFacade:
         self.providers = {name: PROVIDER_MAP[name](self.data_dir) for name in providers}
 
     def download(
-        self, providers: str | list[str] = None, workers: int = 1, force_update: bool = False
+        self,
+        providers: str | list[str] = None,
+        tolerance: int = 1,
+        force_update: bool = False,
+        workers: int = 1,
     ):
         if providers:
             self.set_providers(providers)
 
         # Now use None for providers to keep what we just set.
-        self.download_station_info(None, workers, force_update)
-        self.download_daily_values(None, None, workers, force_update)
+        self.download_station_info(None, force_update, workers)
+        self.download_daily_values(None, None, tolerance, force_update, workers)
 
     def download_station_info(
-        self, providers: str | list[str] = None, workers: int = 1, force_update: bool = False
+        self, providers: str | list[str] = None, force_update: bool = False, workers: int = 1
     ):
         if providers:
             self.set_providers(providers)
@@ -137,8 +141,9 @@ class GaugeDataFacade:
         self,
         providers: str | list[str] = None,
         sites: str | list[str] = None,
+        tolerance: int = 1,
+        force_update: bool = False,
         workers: int = 1,
-        force_update: bool = True,
     ):
         if providers:
             self.set_providers(providers)
@@ -146,7 +151,7 @@ class GaugeDataFacade:
         sites_dict = self._preprocess_sites(sites)
 
         def worker_fn(provider: BaseProvider, p_sites: list):
-            asyncio.run(provider.download_daily_values(p_sites, force_update))
+            asyncio.run(provider.download_daily_values(p_sites, tolerance, force_update))
 
         args_iter = list(sites_dict.items())
         self._run_workers(worker_fn, args_iter, workers)
@@ -174,11 +179,12 @@ class GaugeDataFacade:
         # sites = self._validate_sites(sites)
         sites_dict = self._preprocess_sites(sites)
 
-        provider_dfs = [
-            p.get_daily_data(p_sites, start_date, end_date) for p, p_sites in sites_dict.items()
-        ]
-        if provider_dfs:
-            return pd.concat(provider_dfs)
+        provider_dfs = []
+        for _provider, _sites in sites_dict.items():
+            p_df = _provider.get_daily_data(_sites, start_date, end_date)
+            p_df["provider"] = _provider.name.upper()
+
+        return pd.concat(provider_dfs)
 
     @staticmethod
     def _validate_providers(providers: str | list[str] | set[str] | None) -> set[str]:
@@ -207,16 +213,25 @@ class GaugeDataFacade:
     def _run_workers(self, worker_fn, args_iter, workers):
         """Helper to run worker_fn over args_iter with optional threading."""
         if workers > 1:
-            with ThreadPoolExecutor(max_workers=workers) as executor:
-                futures = [executor.submit(worker_fn, *args) for args in args_iter]
-                for future in as_completed(futures):
-                    try:
-                        future.result()
-                    except Exception as exc:
-                        print(f"A provider download failed: {exc}")
+            try:
+                with ThreadPoolExecutor(max_workers=workers) as executor:
+                    futures = [executor.submit(worker_fn, *args) for args in args_iter]
+                    for future in as_completed(futures):
+                        try:
+                            future.result()
+                        except Exception as exc:
+                            print(f"A provider download failed: {exc}")
+            except KeyboardInterrupt:
+                print("\nKeyboardInterrupt received. Attempting to shut down threads...")
+                executor.shutdown(wait=False, cancel_futures=True)
+                raise
         else:
-            for args in args_iter:
-                worker_fn(*args)
+            try:
+                for args in args_iter:
+                    worker_fn(*args)
+            except KeyboardInterrupt:
+                print("\nKeyboardInterrupt received. Exiting...")
+                raise
 
     def _preprocess_sites(self, sites: str | list[str] | None) -> dict[BaseProvider, list[str]]:
         if sites is None:
@@ -267,22 +282,24 @@ class Config:
 
 class Download:
     @staticmethod
-    def all(providers=None, workers=1, force_update=False):
+    def all(providers=None, force_update=False, workers=1):
         """Download all data (station info and timeseries)."""
         downloader = GaugeDataFacade(providers=providers)
         downloader.download(force_update=force_update, workers=workers)
 
     @staticmethod
-    def stations(providers=None, workers=1, force_update=False):
+    def stations(providers=None, force_update=False, workers=1):
         """Download only station info."""
         downloader = GaugeDataFacade(providers=providers)
         downloader.download_station_info(force_update=force_update, workers=workers)
 
     @staticmethod
-    def timeseries(providers=None, workers=1, force_update=False):
+    def timeseries(providers=None, tolerance=1, force_update=False, workers=1):
         """Download only timeseries data."""
         downloader = GaugeDataFacade(providers=providers)
-        downloader.download_daily_values(workers=workers, force_update=force_update)
+        downloader.download_daily_values(
+            tolerance=tolerance, force_update=force_update, workers=workers
+        )
 
 
 if __name__ == "__main__":

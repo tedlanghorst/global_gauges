@@ -16,6 +16,7 @@ class USGSProvider(BaseProvider):
     """
 
     name = "usgs"
+    desc = "United States Geological Survey"
     # https://help.waterdata.usgs.gov/codes-and-parameters/daily-value-qualification-code-dv_rmk_cd
     quality_map = {
         "A": QualityFlag.GOOD,

@@ -12,6 +12,7 @@ class ECCCProvider(BaseProvider):
     """Data provider for Environment and Climate Change Canada (ECCC) hydrologic data"""
 
     name = "eccc"
+    desc = "Environment and Climate Change Canada"
     # https://collaboration.cmc.ec.gc.ca/cmc/hydrometrics/www/Document/WebService_Guidelines_RealtimeData.pdf
     quality_map = {
         "FINAL": QualityFlag.GOOD,

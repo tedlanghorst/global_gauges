@@ -16,6 +16,7 @@ class UKEAProvider(BaseProvider):
     """
 
     name = "ukea"
+    desc = "United Kingdom Environment Agency"
     quality_map = {
         "Good": QualityFlag.GOOD,
         "Estimated": QualityFlag.ESTIMATED,
@@ -26,7 +27,7 @@ class UKEAProvider(BaseProvider):
 
     def _download_station_info(self) -> pd.DataFrame:
         BASE_URL = "http://environment.data.gov.uk/hydrology/id/stations.json"
-        LIMIT = 100
+        LIMIT = 1000
 
         def process_response(d):
             site_id = d["wiskiID"]

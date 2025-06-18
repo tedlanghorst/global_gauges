@@ -7,15 +7,15 @@ from ._base import BaseProvider
 from ..database import QualityFlag
 
 
-class HubeauProvider(BaseProvider):
+class EauFProvider(BaseProvider):
     """
     Data provider for Hub'eau (France).
     https://hubeau.eaufrance.fr/page/api-hydrometrie
 
     """
 
-    name = "hubeau"
-    desc = "French hydrologic service"
+    name = "eauf"
+    desc = "French water (eau) information service"
     quality_map = {
         "Bonne": QualityFlag.GOOD,
         "Douteuse": QualityFlag.SUSPECT,

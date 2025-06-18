@@ -1,15 +1,15 @@
 from ._base import BaseProvider
-from .abom import ABOMProvider
+from .abom import ABoMProvider
 from .eccc import ECCCProvider
-from .hubeau import HubeauProvider
+from .eauf import EauFProvider
 from .ukea import UKEAProvider
 from .usgs import USGSProvider
 
 # Map provider names to their classes
 PROVIDER_MAP = {
-    "abom": ABOMProvider,
+    "abom": ABoMProvider,
     "eccc": ECCCProvider,
-    "hubeau": HubeauProvider,
+    "eauf": EauFProvider,
     "ukea": UKEAProvider,
     "usgs": USGSProvider,
 }

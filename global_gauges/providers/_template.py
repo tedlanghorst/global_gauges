@@ -4,7 +4,7 @@ from ._base import BaseProvider
 from ..database import QualityFlag  # noqa: F401
 
 
-class YourProviderName(BaseProvider):
+class WEAProvider(BaseProvider):
     """
     Template for a new data provider. Replace the properties and fill in the methods below.
     """

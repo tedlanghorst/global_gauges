@@ -27,6 +27,9 @@ where = ["."]
 include = ["global_gauges"]
 exclude = ["notebooks"]
 
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
 
 [tool.ruff]
 line-length = 100

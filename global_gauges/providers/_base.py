@@ -163,14 +163,20 @@ class BaseProvider(ABC):
         gdf = gpd.GeoDataFrame(df, geometry=geometries, crs="EPSG:4326")
         return gdf.set_index("site_id")
 
-    def _get_sites_to_update(self, metadata, site_ids, force_update) -> dict[str : pd.Timestamp]:
+    def _get_sites_to_update(
+        self,
+        metadata: gpd.GeoDataFrame,
+        site_ids: list[str] | None,
+        tolerance: int,
+        force_update: bool,
+    ) -> dict[str : pd.Timestamp]:
         # Use all sites if none specified
         if site_ids is None:
             site_ids = metadata.index.to_list()
 
         # Determine which sites need updating
-        today = pd.Timestamp.now().date()
-        default_start = pd.Timestamp(1950, 1, 1).date()
+        today = pd.Timestamp.now().normalize()
+        default_start = pd.Timestamp(1950, 1, 1).normalize()
         sites_to_update = {}
 
         for site in site_ids:
@@ -181,18 +187,21 @@ class BaseProvider(ABC):
                 last_updated = pd.Timestamp(metadata.loc[site]["last_updated"])
                 if (last_updated is None) or (last_updated is pd.NaT):
                     sites_to_update[site] = default_start
-                elif last_updated.date() != today:
+                    continue
+
+                days_since_update = (today - last_updated).days
+                if days_since_update > tolerance:
                     sites_to_update[site] = last_updated
 
         if len(sites_to_update) == 0:
             print(f"All sites for {self.name.upper()} are up-to-date.")
             return
 
-        print(f"Updating {len(sites_to_update)} sites for {self.name.upper()}...")
-
         return sites_to_update
 
-    async def download_daily_values(self, site_ids: list[str] = None, force_update: bool = False):
+    async def download_daily_values(
+        self, site_ids: list[str] | None, tolerance: int, force_update: bool = False
+    ):
         """
         Download daily discharge data for specified sites.
 
@@ -203,12 +212,14 @@ class BaseProvider(ABC):
         if metadata is None:
             raise ValueError("No station metadata available. Run download_station_info() first.")
 
-        sites_to_update = self._get_sites_to_update(metadata, site_ids, force_update)
+        sites_to_update = self._get_sites_to_update(metadata, site_ids, tolerance, force_update)
+        if sites_to_update is None:
+            return
 
         # This semaphore ensures only ONE _download_daily_values coroutine can run at a time.
         semaphore = asyncio.Semaphore(1)
 
-        async def download_and_process_site(site_id, start_date):
+        async def dl_and_process(site_id, start_date):
             """Worker task for a single site."""
             async with semaphore:
                 # Semaphore ensures only one task can enter this block at a time.
@@ -268,9 +279,7 @@ class BaseProvider(ABC):
                 logging.warning(warning_str)
 
         # Create and run all tasks concurrently (again, semaphore prevents crushing the provider API)
-        tasks = [
-            download_and_process_site(site_id, start) for site_id, start in sites_to_update.items()
-        ]
+        tasks = [dl_and_process(site_id, start) for site_id, start in sites_to_update.items()]
         await tqdm.gather(*tasks, desc=f"{self.name.upper()}: processing sites")
 
     def _update_last_fetched(self, site_id: str):

@@ -8,7 +8,7 @@ from ._base import BaseProvider
 from ..database import QualityFlag
 
 
-class ABOMProvider(BaseProvider):
+class ABoMProvider(BaseProvider):
     """
     Data provider for the Australian Bureau of Meteorology (BOM).
     http://www.bom.gov.au/waterdata/
@@ -18,6 +18,7 @@ class ABOMProvider(BaseProvider):
     """
 
     name = "abom"
+    desc = "Australian Bureau of Meteorology"
     # http://www.bom.gov.au/water/hrs/qc_doc.shtml
     quality_map = {
         "A": QualityFlag.GOOD,

@@ -8,16 +8,14 @@ An interface for downloading, updating, and querying river gauge data from multi
 
 
 ## Installation
-You can install the package using one of the following methods:
-
 ### Using uv
 ```bash
 uv venv
 source .venv/bin/activate
 uv pip install .
 ```
-
-### Using conda
+ 
+### Or, using conda
 ```bash
 conda create -n global-gauges python=3.10
 conda activate global-gauges
@@ -71,6 +69,25 @@ station_ages = facade.get_station_info()['last_updated']
 
 For more details on the high-level interaction, see the code and docstrings in `global_gauges.py`.
 
+## Command Line Interface
+There are also a few commands you can call from a CLI to download data. This interface could be useful if you want to schedule a bash script to periodically update your databases. 
+
+Just like the python interface, we need to set the data directory if you have not already done so. 
+```bash
+python global_gauges.py config set_data_dir /path/to/data
+```
+The same three download methods are exposed to the CLI. Note you would never actually call these three in a row, as `download all` just combines `stations` and `timeseries`. 
+```bash
+python global_gauges.py download all
+python global_gauges.py download stations
+python global_gauges.py download timeseries
+```
+Or, with some arguments:
+```bash
+python global_gauges.py download all --providers "usgs,eccc" --workers 2
+python global_gauges.py download stations --providers "ukea" --force_update True
+python global_gauges.py download timeseries --tolerance 30 # only update sites >30 days old.
+```
 
 ## License
 This project is licensed under the GNU General Public License v3.0 or later (GPLv3+). See the LICENSE file for details.
