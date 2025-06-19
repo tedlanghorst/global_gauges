@@ -15,5 +15,7 @@ wheels/
 # providers that are broken.
 /global_gauges/providers/broken/
 
+/notebooks
+
 # Virtual environments
 .venv

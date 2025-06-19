@@ -183,6 +183,7 @@ class GaugeDataFacade:
         for _provider, _sites in sites_dict.items():
             p_df = _provider.get_daily_data(_sites, start_date, end_date)
             p_df["provider"] = _provider.name.upper()
+            provider_dfs.append(p_df)
 
         return pd.concat(provider_dfs)
 

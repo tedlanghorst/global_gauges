@@ -40,7 +40,7 @@ class WEAProvider(BaseProvider):
         Returns a DataFrame with columns: [site_id, date, discharge, quality_flag]
         Make sure the discharge is in cubic meters per second.
 
-        This function should be implemented as an async function. The BaseProvider class
+        This method must be implemented as an async operation. The BaseProvider class
         will ensure that only 1 request to the provider API is made at a time (to prevent hammering
         the provider's server), and only uses the async feature to do some database manipulation with
         the dataframe we return here. There are two general ways I have implemented the async calls,
