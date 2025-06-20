@@ -69,6 +69,25 @@ station_ages = facade.get_station_info()['last_updated']
 
 For more details on the high-level interaction, see the code and docstrings in `global_gauges.py`.
 
+
+### Adding Providers
+`global_gauges` implements each provider as a subclass of the `BaseProvider` class which contains the methods for higher-level package interfacing and database management. To add a new provider, use the template in `providers/_template.py` as a starting point. Copy this file and rename it to match your provider (e.g., myprovider.py). Follow the instructions in the template and do these 4 things:
+
+1. Set the name, description, and (if provided) map the provider's quality flags onto the standard set defined in `database/models.py`.
+2. Implement the `_download_station_info` method. 
+    ```python
+    def _download_station_info(self) -> pd.DataFrame:
+    ```
+    This method returns a pandas DataFrame of metadata for all sites with discharge data. This dataframe _must_ include the columns: `site_id`, `name`, `latitude`, `longitude`. Additionally, you can return columns `area` (watershed area), `active` (as indicated by provider), and `provider_misc` (a dictionary of other data you want or need to store). Since `active` is defined differently for each provider, you will likely want to rely on the `max_date` value that is automatically updated in the metadata whenever we download daily discharge data.
+
+3. Implement the `_download_daily_values` method. 
+    ```python
+    async def _download_daily_values(self, site_id: str, start: pd.Timestamp, misc: dict) -> pd.DataFrame:
+    ```
+    This method takes a single `site_id`, `start_date`, and the `provider_misc` data returned by the previous method and returns a pandas DataFrame. This dataframe must include `site_id`, `date`, `discharge`, and `quality_flag`. This method must be implemented using async/await calls- more details on this are provided in the template. 
+
+4. Import your new provider class in `providers/__init__.py` and add your provider to the list of available providers.
+
 ## Command Line Interface
 There are also a few commands you can call from a CLI to download data. This interface could be useful if you want to schedule a bash script to periodically update your databases. 
 

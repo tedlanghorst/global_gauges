@@ -1,4 +1,4 @@
-from ._base import BaseProvider
+from ._base import BaseProvider # exposed for type hinting.
 from .abom import ABoMProvider
 from .eccc import ECCCProvider
 from .eauf import EauFProvider

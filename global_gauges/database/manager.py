@@ -2,7 +2,6 @@ import json
 from pathlib import Path
 
 # from functools import wraps
-from typing import Optional
 
 import duckdb
 import pandas as pd
@@ -48,8 +47,8 @@ class DatabaseManager:
 
         self.database_path = provider_data_dir / f"{provider_name}.duckdb"
 
-        self._write_conn: Optional[duckdb.DuckDBPyConnection] = None
-        self._read_conn: Optional[duckdb.DuckDBPyConnection] = None
+        self._write_conn: duckdb.DuckDBPyConnection | None = None
+        self._read_conn: duckdb.DuckDBPyConnection | None = None
 
         self._initialize_tables()
 
@@ -162,7 +161,7 @@ class DatabaseManager:
 
         self.close_conn()
 
-    def get_site_metadata(self, site_ids: Optional[list[str]] = None) -> list[SiteMetadata]:
+    def get_site_metadata(self, site_ids: list[str] | None = None) -> list[SiteMetadata]:
         """
         Retrieve site metadata from database.
 
@@ -228,7 +227,7 @@ class DatabaseManager:
         self.close_conn()
 
     def get_discharge_data(
-        self, site_ids: list[str], start_date: Optional[str] = None, end_date: Optional[str] = None
+        self, site_ids: list[str], start_date: str | None = None, end_date: str | None = None
     ) -> list[DischargeRecord]:
         """
         Retrieve discharge data from database.

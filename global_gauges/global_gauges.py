@@ -169,9 +169,14 @@ class GaugeDataFacade:
 
         return pd.concat(provider_info)
 
-    def get_active_stations(self) -> pd.DataFrame:
+    def get_active_stations(self) -> gpd.GeoDataFrame:
         gdf = self.get_station_info()
         return gdf[gdf["active"]]
+    
+    def get_stations_n_days(self, days:int) -> gpd.GeoDataFrame:
+        gdf = self.get_station_info()
+        cutoff = pd.Timestamp.now().normalize() - pd.Timedelta(days, 'days')
+        return gdf[gdf['max_date'] >= cutoff]
 
     def get_daily_values(
         self, sites: str | list[str] = None, start_date: str = None, end_date: str = None
