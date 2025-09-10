@@ -3,7 +3,7 @@ name = "global-gauges"
 version = "0.1.0"
 description = "A package for downloading and querying river discharge data."
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.11"
 license = "GPL-3.0-or-later"
 dependencies = [
     "aiohttp>=3.12.13",

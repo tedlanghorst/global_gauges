@@ -93,19 +93,19 @@ There are also a few commands you can call from a CLI to download data. This int
 
 Just like the python interface, we need to set the data directory if you have not already done so. 
 ```bash
-python global_gauges.py config set_data_dir /path/to/data
+python run.py config set_data_dir /path/to/data
 ```
 The same three download methods are exposed to the CLI. Note you would never actually call these three in a row, as `download all` just combines `stations` and `timeseries`. 
 ```bash
-python global_gauges.py download all
-python global_gauges.py download stations
-python global_gauges.py download timeseries
+python run.py download all
+python run.py download stations
+python run.py download timeseries
 ```
 Or, with some arguments:
 ```bash
-python global_gauges.py download all --providers "usgs,eccc" --workers 2
-python global_gauges.py download stations --providers "ukea" --force_update True
-python global_gauges.py download timeseries --tolerance 30 # only update sites >30 days old.
+python run.py download all --providers "usgs,eccc" --workers 2
+python run.py download stations --providers "ukea" --force_update True
+python run.py download timeseries --tolerance 30 # only update sites >30 days old.
 ```
 
 ## License

@@ -8,43 +8,63 @@ from pathlib import Path
 from platformdirs import user_config_dir
 import pandas as pd
 import geopandas as gpd
-import fire
 
 from .providers import PROVIDER_MAP, BaseProvider
 
+# Private manager for the config file and data directory.
+class _ConfigManager:
+    """
+    Manages loading and saving the default data directory.
+    It lazy-loads the configuration from the file on first access.
+    """
+    def __init__(self):
+        self.config_dir = Path(user_config_dir("global_gauges"))
+        self.config_path = self.config_dir / "config.json"
+        self._default_data_dir: Path = None
+        self._loaded_from_file: bool = False
 
-CONFIG_DIR = Path(user_config_dir("global_gauges"))
-CONFIG_PATH = CONFIG_DIR / "config.json"
-_default_data_dir = None
+    def _load(self):
+        """Loads configuration from the JSON file."""
+        if self.config_path.exists():
+            try:
+                with self.config_path.open("r") as f:
+                    config = json.load(f)
+                path_str = config.get("data_dir")
+                if path_str:
+                    self._default_data_dir = Path(path_str)
+            except (IOError, json.JSONDecodeError) as e:
+                print(f"Warning: Could not read config file at {self.config_path}: {e}")
+        self._loaded_from_file = True
 
+    def get_default_data_dir(self) -> Path | None:
+        """Returns the default data directory, loading it from file if necessary."""
+        if not self._loaded_from_file:
+            self._load()
+        return self._default_data_dir
 
-def _load_default_data_dir():
-    global _default_data_dir
-    if CONFIG_PATH.exists():
+    def set_default_data_dir(self, path: str | Path) -> Path:
+        """Sets and persists the default data directory."""
+        data_dir = Path(path).resolve()
+        self._default_data_dir = data_dir
+        self._loaded_from_file = True  # The value is now set, no need to load from file again
         try:
-            with open(CONFIG_PATH, "r") as f:
-                config = json.load(f)
-            data_dir = config.get("data_dir")
-            if data_dir:
-                _default_data_dir = Path(data_dir)
-        except Exception:
-            pass
+            self.config_dir.mkdir(parents=True, exist_ok=True)
+            with self.config_path.open("w") as f:
+                json.dump({"data_dir": str(data_dir)}, f)
+        except IOError as e:
+            print(f"Warning: Could not save default data_dir to {self.config_path}: {e}")
+        return data_dir
+
+# Instantiate the data dir manager. Does not actually load anything yet. 
+config = _ConfigManager()
 
 
-_load_default_data_dir()
 
+# --- Public facing functions --- 
 
 def set_default_data_dir(path: str | Path):
-    global _default_data_dir
-    data_dir = Path(path)
-    _default_data_dir = data_dir
-    try:
-        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-        with open(CONFIG_PATH, "w") as f:
-            json.dump({"data_dir": str(data_dir)}, f)
-    except Exception as e:
-        print(f"Warning: Could not save default data_dir to {CONFIG_PATH}: {e}")
-    return data_dir
+    """Public function to set the default data directory for the library."""
+    return config.set_default_data_dir(path)
 
 
 class GaugeDataFacade:
@@ -55,15 +75,17 @@ class GaugeDataFacade:
         data_dir: str | Path = None,
         providers: str | list[str] | set[str] = None,
     ):
-        if data_dir is not None:
-            self.data_dir = Path(data_dir)
-        elif _default_data_dir is not None:
-            self.data_dir = _default_data_dir
-        else:
+        # Use the provided data_dir if it exists. 
+        # Otherwise, ask the config manager for the default.
+        data_dir = data_dir or config.get_default_data_dir()
+
+        if data_dir is None:
             raise ValueError(
                 "No data_dir provided and no default set. "
                 "Please provide a data_dir or call set_default_data_dir()."
             )
+        
+        self.data_dir = Path(data_dir)
 
         # Set up logging
         log_dir = self.logs_dir = self.data_dir / "_logs"
@@ -272,46 +294,3 @@ class GaugeDataFacade:
 
         return dict(provider_sites_map)
 
-
-"""
-CLI interface for downloading.
-"""
-
-
-class Config:
-    @staticmethod
-    def set_data_dir(path: str):
-        """Set the default data directory for downloads."""
-        set_default_data_dir(path)
-        print(f"Default data directory set to: {path}")
-
-
-class Download:
-    @staticmethod
-    def all(providers=None, force_update=False, workers=1):
-        """Download all data (station info and timeseries)."""
-        downloader = GaugeDataFacade(providers=providers)
-        downloader.download(force_update=force_update, workers=workers)
-
-    @staticmethod
-    def stations(providers=None, force_update=False, workers=1):
-        """Download only station info."""
-        downloader = GaugeDataFacade(providers=providers)
-        downloader.download_station_info(force_update=force_update, workers=workers)
-
-    @staticmethod
-    def timeseries(providers=None, tolerance=1, force_update=False, workers=1):
-        """Download only timeseries data."""
-        downloader = GaugeDataFacade(providers=providers)
-        downloader.download_daily_values(
-            tolerance=tolerance, force_update=force_update, workers=workers
-        )
-
-
-if __name__ == "__main__":
-    fire.Fire(
-        {
-            "config": Config,
-            "download": Download,
-        }
-    )
