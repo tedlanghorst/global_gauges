@@ -28,8 +28,9 @@ package = true
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["global_gauges"]
+include = ["global_gauges*"]
 exclude = ["notebooks"]
+
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]

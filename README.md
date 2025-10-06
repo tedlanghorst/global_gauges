@@ -10,9 +10,7 @@ An interface for downloading, updating, and querying river gauge data from multi
 ## Installation
 ### Using uv
 ```bash
-uv venv
-source .venv/bin/activate
-uv pip install .
+uv sync
 ```
  
 ### Or, using conda
