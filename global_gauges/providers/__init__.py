@@ -1,9 +1,10 @@
-from ._base import BaseProvider # exposed for type hinting.
+from ._base import BaseProvider  # exposed for type hinting.
 from .abom import ABoMProvider
 from .eccc import ECCCProvider
 from .eauf import EauFProvider
 from .ukea import UKEAProvider
 from .usgs import USGSProvider
+from .brana import BrANAProvider
 
 # Map provider names to their classes
 PROVIDER_MAP = {
@@ -12,6 +13,7 @@ PROVIDER_MAP = {
     "eauf": EauFProvider,
     "ukea": UKEAProvider,
     "usgs": USGSProvider,
+    "brana": BrANAProvider,
 }
 
 __all__ = ["PROVIDER_MAP", "BaseProvider"]

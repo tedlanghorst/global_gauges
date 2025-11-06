@@ -2,6 +2,7 @@ import fire
 
 from global_gauges import set_default_data_dir, GaugeDataFacade
 
+
 class Config:
     @staticmethod
     def set_data_dir(path: str):

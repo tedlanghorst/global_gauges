@@ -10,10 +10,11 @@ from pydantic import ValidationError
 
 from ..database import QualityFlag, SiteMetadata, DischargeRecord, DatabaseManager
 
-# TODO Would be nice to request multiple sites, especially when updating the database with a short timespan. 
+# TODO Would be nice to request multiple sites, especially when updating the database with a short timespan.
 # I.e. 5000 single site queries for 7 days of data is kind of silly if we could do 50 queries for 100 sites * 7 days.
 # Some providers may not support multiple sites though and we would need to differentiate. Maybe intermediate classes
 # for apis that allow different types of queries? Maybe a subclass method that does the batching?
+
 
 class BaseProvider(ABC):
     """

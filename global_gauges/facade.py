@@ -11,12 +11,14 @@ import geopandas as gpd
 
 from .providers import PROVIDER_MAP, BaseProvider
 
+
 # Private manager for the config file and data directory.
 class _ConfigManager:
     """
     Manages loading and saving the default data directory.
     It lazy-loads the configuration from the file on first access.
     """
+
     def __init__(self):
         self.config_dir = Path(user_config_dir("global_gauges"))
         self.config_path = self.config_dir / "config.json"
@@ -55,13 +57,12 @@ class _ConfigManager:
             print(f"Warning: Could not save default data_dir to {self.config_path}: {e}")
         return data_dir
 
-# Instantiate the data dir manager. Does not actually load anything yet. 
+
+# Instantiate the data dir manager. Does not actually load anything yet.
 config = _ConfigManager()
 
 
-
-# --- Public facing functions --- 
-
+# --- Public facing functions ---
 def set_default_data_dir(path: str | Path):
     """Public function to set the default data directory for the library."""
     return config.set_default_data_dir(path)
@@ -75,7 +76,7 @@ class GaugeDataFacade:
         data_dir: str | Path = None,
         providers: str | list[str] | set[str] = None,
     ):
-        # Use the provided data_dir if it exists. 
+        # Use the provided data_dir if it exists.
         # Otherwise, ask the config manager for the default.
         data_dir = data_dir or config.get_default_data_dir()
 
@@ -84,7 +85,7 @@ class GaugeDataFacade:
                 "No data_dir provided and no default set. "
                 "Please provide a data_dir or call set_default_data_dir()."
             )
-        
+
         self.data_dir = Path(data_dir)
 
         # Set up logging
@@ -194,11 +195,11 @@ class GaugeDataFacade:
     def get_active_stations(self) -> gpd.GeoDataFrame:
         gdf = self.get_station_info()
         return gdf[gdf["active"]]
-    
-    def get_stations_n_days(self, days:int) -> gpd.GeoDataFrame:
+
+    def get_stations_n_days(self, days: int) -> gpd.GeoDataFrame:
         gdf = self.get_station_info()
-        cutoff = pd.Timestamp.now().normalize() - pd.Timedelta(days, 'days')
-        return gdf[gdf['max_date'] >= cutoff]
+        cutoff = pd.Timestamp.now().normalize() - pd.Timedelta(days, "days")
+        return gdf[gdf["max_date"] >= cutoff]
 
     def get_daily_values(
         self, sites: str | list[str] = None, start_date: str = None, end_date: str = None
@@ -293,4 +294,3 @@ class GaugeDataFacade:
             provider_sites_map[provider].append(site_id)
 
         return dict(provider_sites_map)
-
