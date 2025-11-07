@@ -30,7 +30,7 @@ class BrANAProvider(BaseProvider):
         "2": QualityFlag.GOOD,  # Consistido
     }
 
-    def _download_station_info(self) -> pd.DataFrame:
+    def _download_station_info(self, api_key: str | None) -> pd.DataFrame:
         """
         Downloads metadata for all flow stations from ANA's ANAF database.
         """
@@ -74,7 +74,7 @@ class BrANAProvider(BaseProvider):
         return pd.DataFrame(station_info)
 
     async def _download_daily_values(
-        self, site_id: str, start: pd.Timestamp, misc: dict
+        self, site_id: str, start: pd.Timestamp, api_key: str | None, misc: dict
     ) -> pd.DataFrame:
         """
         Downloads daily flow data for a specific station.

@@ -25,7 +25,7 @@ class ECCCProvider(BaseProvider):
         "-1": QualityFlag.UNKNOWN,
     }
 
-    def _download_station_info(self) -> pd.DataFrame:
+    def _download_station_info(self, api_key: str | None) -> pd.DataFrame:
         """Download and save metadata for all CNHS sites with discharge data."""
         base_url = "https://api.weather.gc.ca/collections/hydrometric-stations/items?limit=10000"
         response = requests.get(base_url)
@@ -58,7 +58,9 @@ class ECCCProvider(BaseProvider):
 
         return df
 
-    async def _download_historical_values(self, session: aiohttp.ClientSession, site_id: str, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
+    async def _download_historical_values(
+        self, session: aiohttp.ClientSession, site_id: str, start: pd.Timestamp, end: pd.Timestamp
+    ) -> pd.DataFrame:
         """
         Fetch historical data from the ECCC OGC API (HYDAT equivalent).
         This API returns GeoJSON and requires paging.
@@ -68,7 +70,9 @@ class ECCCProvider(BaseProvider):
         limit = 1000
         offset = 0
 
-        datetime_range = f"{start.strftime('%Y-%m-%dT00:00:00Z')}/{end.strftime('%Y-%m-%dT23:59:59Z')}"
+        datetime_range = (
+            f"{start.strftime('%Y-%m-%dT00:00:00Z')}/{end.strftime('%Y-%m-%dT23:59:59Z')}"
+        )
 
         while True:
             params = {
@@ -100,7 +104,7 @@ class ECCCProvider(BaseProvider):
         records = []
         for feat in all_features:
             props = feat.get("properties", {})
-            
+
             # Only include records that have discharge data
             if props.get("DISCHARGE") is not None:
                 records.append(
@@ -119,8 +123,9 @@ class ECCCProvider(BaseProvider):
         df["date"] = pd.to_datetime(df["date"]).dt.date
         return df
 
-        
-    async def _download_realtime_values(self, session: aiohttp.ClientSession, site_id: str, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
+    async def _download_realtime_values(
+        self, session: aiohttp.ClientSession, site_id: str, start: pd.Timestamp, end: pd.Timestamp
+    ) -> pd.DataFrame:
         """
         Fetch recent data from the ECCC real-time CSV service.
         (This is your original function, adapted as a helper)
@@ -154,8 +159,9 @@ class ECCCProvider(BaseProvider):
 
             return daily_df
 
-    async def _download_daily_values(self, site_id: str, start: pd.Timestamp, misc: dict) -> pd.DataFrame:
-        
+    async def _download_daily_values(
+        self, site_id: str, start: pd.Timestamp, api_key: str | None, misc: dict
+    ) -> pd.DataFrame:
         # 1. Define dates
         end = pd.Timestamp.now(tz=start.tz)
         # Real-time data is available for the last 18 months
@@ -163,27 +169,23 @@ class ECCCProvider(BaseProvider):
 
         async with aiohttp.ClientSession() as session:
             tasks = []
-            
+
             # 2. Check if historical data is needed
             if start < cutoff_date:
                 # We need data from 'start' up to (but not including) the cutoff
                 hist_end = cutoff_date - pd.Timedelta(days=1)
-                tasks.append(
-                    self._download_historical_values(session, site_id, start, hist_end)
-                )
+                tasks.append(self._download_historical_values(session, site_id, start, hist_end))
 
             # 3. Check if real-time data is needed
             # This is from the cutoff date OR the start date (whichever is later)
             realtime_start = max(start, cutoff_date)
             if realtime_start < end:
-                tasks.append(
-                    self._download_realtime_values(session, site_id, realtime_start, end)
-                )
-            
+                tasks.append(self._download_realtime_values(session, site_id, realtime_start, end))
+
             # 4. Run downloads concurrently
             if not tasks:
                 return pd.DataFrame()
-                
+
             results = await asyncio.gather(*tasks)
             dataframes = [df for df in results if not df.empty]
 
@@ -197,5 +199,5 @@ class ECCCProvider(BaseProvider):
             .sort_values(by="date")
             .reset_index(drop=True)
         )
-        
+
         return final_df

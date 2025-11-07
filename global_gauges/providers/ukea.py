@@ -25,7 +25,7 @@ class UKEAProvider(BaseProvider):
         "Missing": QualityFlag.BAD,
     }
 
-    def _download_station_info(self) -> pd.DataFrame:
+    def _download_station_info(self, api_key: str | None) -> pd.DataFrame:
         BASE_URL = "http://environment.data.gov.uk/hydrology/id/stations.json"
         LIMIT = 1000
 
@@ -57,7 +57,7 @@ class UKEAProvider(BaseProvider):
         return pd.DataFrame(all_data)
 
     async def _download_daily_values(
-        self, site_id: str, start: pd.Timestamp, misc: dict
+        self, site_id: str, start: pd.Timestamp, api_key: str | None, misc: dict
     ) -> pd.DataFrame:
         end = pd.Timestamp.now()
 

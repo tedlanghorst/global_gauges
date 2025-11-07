@@ -28,7 +28,7 @@ class ABoMProvider(BaseProvider):
         "F": QualityFlag.BAD,
     }
 
-    def _download_station_info(self) -> None:
+    def _download_station_info(self, api_key: str | None) -> None:
         """
         Downloads station info from the BOM Water Data service.
         It uses the GetStationList service to retrieve a CSV of all stations.
@@ -62,7 +62,7 @@ class ABoMProvider(BaseProvider):
         return df[["site_id", "name", "latitude", "longitude"]]
 
     async def _download_daily_values(
-        self, site_id: str, start: pd.Timestamp, misc: dict
+        self, site_id: str, start: pd.Timestamp, api_key: str | None, misc: dict
     ) -> pd.DataFrame:
         """Downloads daily discharge data for Australian sites."""
         end = pd.Timestamp.now().date()

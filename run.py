@@ -1,14 +1,20 @@
 import fire
 
-from global_gauges import set_default_data_dir, GaugeDataFacade
+from global_gauges import ConfigManager, GaugeDataFacade
 
 
 class Config:
     @staticmethod
     def set_data_dir(path: str):
         """Set the default data directory for downloads."""
-        set_default_data_dir(path)
-        print(f"Default data directory set to: {path}")
+        config = ConfigManager()
+        data_dir = config.set_default_data_dir(path)
+        print(f"Default data directory set to: {data_dir}")
+
+    @staticmethod
+    def set_key(provider: str, key: str):
+        config = ConfigManager()
+        config.set_provider_key(provider, key)
 
 
 class Download:

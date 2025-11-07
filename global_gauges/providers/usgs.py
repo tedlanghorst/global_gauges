@@ -31,7 +31,7 @@ class USGSProvider(BaseProvider):
         "Eqp": QualityFlag.BAD,
     }
 
-    def _download_station_info(self) -> pd.DataFrame:
+    def _download_station_info(self, api_key: str | None) -> pd.DataFrame:
         """Download and save metadata for all USGS sites with discharge data."""
         # All sites with discharge data
         sites_list = []
@@ -91,7 +91,7 @@ class USGSProvider(BaseProvider):
         return data[["site_id", "date", "discharge", "quality_flag"]]
 
     async def _download_daily_values(
-        self, site_id: str, start: pd.Timestamp, misc: dict
+        self, site_id: str, start: pd.Timestamp, api_key: str | None, misc: dict
     ) -> pd.DataFrame:
         """Download daily discharge data for the given site_ids."""
         df = await asyncio.to_thread(self._nwis_sync_get, site_id, start)

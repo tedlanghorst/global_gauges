@@ -21,7 +21,7 @@ class EauFProvider(BaseProvider):
         "Douteuse": QualityFlag.SUSPECT,
     }  # Good or Dubious lol
 
-    def _download_station_info(self) -> None:
+    def _download_station_info(self, api_key: str | None) -> None:
         """Downloads and saves metadata for all hydrometric stations."""
 
         base_url = "https://hubeau.eaufrance.fr/api/v2/hydrometrie/referentiel/stations"
@@ -64,7 +64,7 @@ class EauFProvider(BaseProvider):
         return df
 
     async def _download_daily_values(
-        self, site_id: str, start: pd.Timestamp, misc: dict
+        self, site_id: str, start: pd.Timestamp, api_key: str | None, misc: dict
     ) -> pd.DataFrame:
         """Downloads daily discharge data for the given site_id."""
 

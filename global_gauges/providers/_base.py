@@ -29,6 +29,9 @@ class BaseProvider(ABC):
     desc: str = "Base Provider Class"
     quality_map: dict[str, QualityFlag] = {}
 
+    # Override with True if an API key is needed to pull data.
+    requires_key: bool = False
+
     def __init__(self, data_dir: str | Path):
         """
         Initialize provider with data directory.
@@ -63,7 +66,7 @@ class BaseProvider(ABC):
             return [_remove_prefix(sid) for sid in site_id]
         return _remove_prefix(site_id)
 
-    def download_station_info(self, force_update: bool = False):
+    def download_station_info(self, force_update: bool = False, api_key: str | None = None):
         """
         Download and store station metadata.
 
@@ -83,7 +86,7 @@ class BaseProvider(ABC):
         print(f"Downloading station information for {self.name.upper()}...")
 
         # Call provider-specific implementation
-        raw_metadata = self._download_station_info()
+        raw_metadata = self._download_station_info(api_key)
 
         # Convert DataFrame to a list of dictionaries for efficient validation
         records_to_validate = raw_metadata.to_dict("records")
@@ -205,7 +208,11 @@ class BaseProvider(ABC):
         return sites_to_update
 
     async def download_daily_values(
-        self, site_ids: list[str] | None, tolerance: int, force_update: bool = False
+        self,
+        site_ids: list[str] | None,
+        tolerance: int,
+        force_update: bool = False,
+        api_key: bool | None = None,
     ):
         """
         Download daily discharge data for specified sites.
@@ -231,6 +238,7 @@ class BaseProvider(ABC):
                 daily_data = await self._download_daily_values(
                     self.remove_provider_prefix(site_id),
                     start_date,
+                    api_key,
                     metadata.loc[site_id]["provider_misc"],
                 )
             # Semaphore is RELEASED here. The event loop can now schedule the next download

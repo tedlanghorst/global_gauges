@@ -12,60 +12,55 @@ import geopandas as gpd
 from .providers import PROVIDER_MAP, BaseProvider
 
 
-# Private manager for the config file and data directory.
-class _ConfigManager:
-    """
-    Manages loading and saving the default data directory.
-    It lazy-loads the configuration from the file on first access.
-    """
+class ConfigManager:
+    """Manages loading and saving configuration from a JSON file."""
 
     def __init__(self):
         self.config_dir = Path(user_config_dir("global_gauges"))
         self.config_path = self.config_dir / "config.json"
-        self._default_data_dir: Path = None
-        self._loaded_from_file: bool = False
 
-    def _load(self):
-        """Loads configuration from the JSON file."""
-        if self.config_path.exists():
-            try:
-                with self.config_path.open("r") as f:
-                    config = json.load(f)
-                path_str = config.get("data_dir")
-                if path_str:
-                    self._default_data_dir = Path(path_str)
-            except (IOError, json.JSONDecodeError) as e:
-                print(f"Warning: Could not read config file at {self.config_path}: {e}")
-        self._loaded_from_file = True
+    def _read_config(self) -> dict:
+        """Reads the entire config file and returns it as a dict."""
+        if not self.config_path.exists():
+            return {}
+        try:
+            with self.config_path.open("r") as f:
+                return json.load(f)
+        except (IOError, json.JSONDecodeError) as e:
+            print(f"Warning: Could not read config file at {self.config_path}: {e}")
+            return {}
+
+    def _write_field(self, key: str, value: any):
+        """Loads config, updates a single field, and saves it back."""
+        config = self._read_config()
+        config[key] = value
+        try:
+            self.config_dir.mkdir(parents=True, exist_ok=True)
+            with self.config_path.open("w") as f:
+                json.dump(config, f, indent=2)
+        except IOError as e:
+            print(f"Warning: Could not save config to {self.config_path}: {e}")
 
     def get_default_data_dir(self) -> Path | None:
-        """Returns the default data directory, loading it from file if necessary."""
-        if not self._loaded_from_file:
-            self._load()
-        return self._default_data_dir
+        """Returns the default data directory from the config file."""
+        config = self._read_config()
+        path_str = config.get("data_dir")
+        return Path(path_str) if path_str else None
 
     def set_default_data_dir(self, path: str | Path) -> Path:
         """Sets and persists the default data directory."""
         data_dir = Path(path).resolve()
-        self._default_data_dir = data_dir
-        self._loaded_from_file = True  # The value is now set, no need to load from file again
-        try:
-            self.config_dir.mkdir(parents=True, exist_ok=True)
-            with self.config_path.open("w") as f:
-                json.dump({"data_dir": str(data_dir)}, f)
-        except IOError as e:
-            print(f"Warning: Could not save default data_dir to {self.config_path}: {e}")
+        self._write_field("data_dir", str(data_dir))
         return data_dir
 
+    def set_provider_key(self, provider: str, key: str):
+        """Stores a provider API key in the config file."""
+        self._write_field(f"api_key_{provider}", key)
 
-# Instantiate the data dir manager. Does not actually load anything yet.
-config = _ConfigManager()
-
-
-# --- Public facing functions ---
-def set_default_data_dir(path: str | Path):
-    """Public function to set the default data directory for the library."""
-    return config.set_default_data_dir(path)
+    def get_provider_key(self, provider: str) -> str | None:
+        """Retrieves a provider API key from the config file."""
+        config = self._read_config()
+        return config.get(f"api_key_{provider}")
 
 
 class GaugeDataFacade:
@@ -76,9 +71,10 @@ class GaugeDataFacade:
         data_dir: str | Path = None,
         providers: str | list[str] | set[str] = None,
     ):
+        self.config = ConfigManager()
         # Use the provided data_dir if it exists.
         # Otherwise, ask the config manager for the default.
-        data_dir = data_dir or config.get_default_data_dir()
+        data_dir = data_dir or self.config.get_default_data_dir()
 
         if data_dir is None:
             raise ValueError(
@@ -154,10 +150,20 @@ class GaugeDataFacade:
         if providers:
             self.set_providers(providers)
 
-        def worker_fn(provider: BaseProvider):
-            provider.download_station_info(force_update)
+        def worker_fn(provider: BaseProvider, force: bool, api_key: str):
+            provider.download_station_info(force_update, force, api_key)
 
-        args_iter = [(provider,) for provider in self.providers.values()]
+        args_iter = []
+        for provider in self.providers.values():
+            api_key = self.config.get_provider_key(provider.name)
+            if provider.requires_key and api_key is None:
+                raise ValueError(
+                    f"Provider '{provider.name}' requires an API key for downloading.  To set, run:\n"
+                    f"from python: facade.config.set_provider_key('{provider.name}', 'YOUR_KEY')\n"
+                    f"or from terminal: python run.py config set_provider_key {provider.name} YOUR_KEY"
+                )
+            args_iter.append((provider, force_update, api_key))
+
         self._run_workers(worker_fn, args_iter, workers)
 
     def download_daily_values(
@@ -173,10 +179,22 @@ class GaugeDataFacade:
 
         sites_dict = self._preprocess_sites(sites)
 
-        def worker_fn(provider: BaseProvider, p_sites: list):
-            asyncio.run(provider.download_daily_values(p_sites, tolerance, force_update))
+        def worker_fn(provider: BaseProvider, sites: list, tol: int, force: bool, key: str):
+            asyncio.run(provider.download_daily_values(sites, tol, force, key))
 
-        args_iter = list(sites_dict.items())
+        args_iter = []
+        # sites_dict maps {provider_instance: list_of_sites}
+        for provider, p_sites in sites_dict.items():
+            api_key = self.config.get_provider_key(provider.name)
+            if provider.requires_key and api_key is None:
+                raise ValueError(
+                    f"Provider '{provider.name}' requires an API key for downloading. To set:\n"
+                    f"from python: facade.config.set_provider_key('{provider.name}', 'YOUR_KEY')\n"
+                    f"or from terminal: python run.py config set_provider_key {provider.name} YOUR_KEY"
+                )
+            # Add all arguments for the worker, including the api_key
+            args_iter.append((provider, p_sites, tolerance, force_update, api_key))
+
         self._run_workers(worker_fn, args_iter, workers)
 
     def get_database_ages(self) -> dict[str, int]:
