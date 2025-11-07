@@ -1,4 +1,5 @@
 import json
+import warnings
 import logging
 import asyncio
 from collections import defaultdict
@@ -157,11 +158,9 @@ class GaugeDataFacade:
         for provider in self.providers.values():
             api_key = self.config.get_provider_key(provider.name)
             if provider.requires_key and api_key is None:
-                raise ValueError(
-                    f"Provider '{provider.name}' requires an API key for downloading.  To set, run:\n"
-                    f"from python: facade.config.set_provider_key('{provider.name}', 'YOUR_KEY')\n"
-                    f"or from terminal: python run.py config set_provider_key {provider.name} YOUR_KEY"
-                )
+                warnings.warn(ProviderKeyWarning(provider.name))
+                continue  # skip this provider
+            
             args_iter.append((provider, force_update, api_key))
 
         self._run_workers(worker_fn, args_iter, workers)
@@ -187,11 +186,9 @@ class GaugeDataFacade:
         for provider, p_sites in sites_dict.items():
             api_key = self.config.get_provider_key(provider.name)
             if provider.requires_key and api_key is None:
-                raise ValueError(
-                    f"Provider '{provider.name}' requires an API key for downloading. To set:\n"
-                    f"from python: facade.config.set_provider_key('{provider.name}', 'YOUR_KEY')\n"
-                    f"or from terminal: python run.py config set_provider_key {provider.name} YOUR_KEY"
-                )
+                warnings.warn(ProviderKeyWarning(provider.name))
+                continue  # skip this provider
+
             # Add all arguments for the worker, including the api_key
             args_iter.append((provider, p_sites, tolerance, force_update, api_key))
 
@@ -312,3 +309,15 @@ class GaugeDataFacade:
             provider_sites_map[provider].append(site_id)
 
         return dict(provider_sites_map)
+
+
+class ProviderKeyWarning(UserWarning):
+    """Warning for missing provider API keys."""
+
+    def __init__(self, provider_name: str):
+        message = (
+            f"Provider '{provider_name}' requires an API key for downloading.  To set, run:\n"
+            f"from python: facade.config.set_provider_key('{provider_name}', 'YOUR_KEY')\n"
+            f"or from terminal: python run.py config set_provider_key {provider_name} YOUR_KEY"
+        )
+        super().__init__(message)
