@@ -21,8 +21,10 @@ class WEAProvider(BaseProvider):
         # "ice": QualityFlag.SUSPECT,
         # "Err": QualityFlag.BAD,
     }
+    # Override with True if an API key is needed to pull data.
+    requires_key: bool = False
 
-    def _download_station_info(self) -> pd.DataFrame:
+    def _download_station_info(self, api_key: str | None) -> pd.DataFrame:
         """
         Download and return metadata for all sites with discharge data.
         Returns a DataFrame with columns: [site_id, name, area, active, latitude, longitude].
@@ -33,7 +35,7 @@ class WEAProvider(BaseProvider):
         raise NotImplementedError("Implement station info download for your provider.")
 
     async def _download_daily_values(
-        self, site_id: str, start: pd.Timestamp, misc: dict
+        self, site_id: str, start: pd.Timestamp, api_key: str | None, misc: dict
     ) -> pd.DataFrame:
         """
         Download daily discharge data for the given site_id(s).

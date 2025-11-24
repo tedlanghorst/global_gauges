@@ -152,7 +152,7 @@ class GaugeDataFacade:
             self.set_providers(providers)
 
         def worker_fn(provider: BaseProvider, force: bool, api_key: str):
-            provider.download_station_info(force_update, force, api_key)
+            provider.download_station_info(force, api_key)
 
         args_iter = []
         for provider in self.providers.values():
@@ -160,7 +160,7 @@ class GaugeDataFacade:
             if provider.requires_key and api_key is None:
                 warnings.warn(ProviderKeyWarning(provider.name))
                 continue  # skip this provider
-            
+
             args_iter.append((provider, force_update, api_key))
 
         self._run_workers(worker_fn, args_iter, workers)
@@ -316,7 +316,8 @@ class ProviderKeyWarning(UserWarning):
 
     def __init__(self, provider_name: str):
         message = (
-            f"Provider '{provider_name}' requires an API key for downloading.  To set, run:\n"
+            f"Provider '{provider_name}' requires an API key for downloading. "
+            "No key was found and it will be skipped.  To set, run:\n"
             f"from python: facade.config.set_provider_key('{provider_name}', 'YOUR_KEY')\n"
             f"or from terminal: python run.py config set_provider_key {provider_name} YOUR_KEY"
         )

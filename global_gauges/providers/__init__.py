@@ -5,6 +5,7 @@ from .eauf import EauFProvider
 from .ukea import UKEAProvider
 from .usgs import USGSProvider
 from .brana import BrANAProvider
+from .krwamis import KrWAMISProvider
 
 # Map provider names to their classes
 PROVIDER_MAP = {
@@ -14,6 +15,7 @@ PROVIDER_MAP = {
     "ukea": UKEAProvider,
     "usgs": USGSProvider,
     "brana": BrANAProvider,
+    "krwamis": KrWAMISProvider,
 }
 
 __all__ = ["PROVIDER_MAP", "BaseProvider"]

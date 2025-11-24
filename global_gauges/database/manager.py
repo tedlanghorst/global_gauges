@@ -171,7 +171,7 @@ class DatabaseManager:
         Returns:
             List of SiteMetadata objects
         """
-        conn = self.get_conn()
+        conn = self.get_conn(write=False)
 
         if site_ids:
             placeholders = ",".join(["?"] * len(site_ids))
@@ -240,7 +240,7 @@ class DatabaseManager:
         Returns:
             List of DischargeRecord objects
         """
-        conn = self.get_conn()
+        conn = self.get_conn(write=False)
 
         # Build query with optional date filters
         clauses = []

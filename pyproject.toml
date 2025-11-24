@@ -13,6 +13,7 @@ dependencies = [
     "fire>=0.7.0",
     "geopandas>=1.1.0",
     "ipykernel>=6.29.5",
+    "lxml>=6.0.2",
     "matplotlib>=3.10.3",
     "numpy>=1.26",
     "pandas>=2.3.0",
