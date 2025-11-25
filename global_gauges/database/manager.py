@@ -133,15 +133,6 @@ class ParquetManager:
             else:
                 # No existing file, just write sorted data
                 new_site_data.sort("date").write_parquet(file_path)
-
-    def get_discharge_lazy(self) -> pl.LazyFrame:
-        """
-        Returns a LazyFrame of the entire dataset. 
-        Useful for analytical queries without loading memory.
-        """
-        # hive_partitioning=True auto-discovers 'site_id' from folder names
-        return pl.scan_parquet(self.discharge_path / "**/*.parquet", hive_partitioning=True)
-    
     
     def get_discharge_data(
         self, 
@@ -152,10 +143,16 @@ class ParquetManager:
         """
         Eagerly fetches data for specific sites as a Polars DataFrame.
         """
-        q = self.get_discharge_lazy()
+        # Construct specific paths to avoid scanning 20k folders
+        # Assumes standard Hive layout: /site_id=VALUE/data.parquet
+        file_paths = [
+            str(self.discharge_path / f"site_id={sid}" / "data.parquet") 
+            for sid in site_ids
+        ]
 
-        # Filter Pushdown: Only opens relevant folders
-        q = q.filter(pl.col("site_id").is_in(site_ids))
+        # Pass the explicit list of files. 
+        # hive_partitioning=True ensures the 'site_id' column is inferred from the path.
+        q = pl.scan_parquet(file_paths, hive_partitioning=True)
 
         if start_date:
             q = q.filter(pl.col("date") >= pl.lit(start_date).cast(pl.Date))

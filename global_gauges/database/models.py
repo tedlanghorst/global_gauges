@@ -86,7 +86,3 @@ class SiteMetadata(BaseModel):
             )
             raise ValueError("Invalid coordinates: latitude and longitude cannot both be zero.")
         return self
-
-    def get_geometry(self) -> Point:
-        """Create a Shapely Point geometry from coordinates."""
-        return Point(self.longitude, self.latitude)

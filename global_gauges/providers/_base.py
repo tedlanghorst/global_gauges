@@ -197,17 +197,33 @@ class BaseProvider(ABC):
             return
 
         # This prevents us from hammering the API if we are already waiting on requests.
-        semaphore = asyncio.Semaphore(10) 
+        semaphore = asyncio.Semaphore(1) 
 
         async def dl_and_process(site_id, start_date):
             async with semaphore:
-                # Retrieve Pandas DataFrame from API
-                df = await self._download_daily_values(
-                    self.remove_provider_prefix(site_id),
-                    start_date,
-                    api_key,
-                    metadata_df.loc[site_id].get("provider_misc")
-                )
+                df = pd.DataFrame()
+                max_retries = 5
+                base_delay = 2.0
+
+                for attempt in range(max_retries):
+                    try:
+                        # Retrieve Pandas DataFrame from API
+                        df = await self._download_daily_values(
+                            self.remove_provider_prefix(site_id),
+                            start_date,
+                            api_key,
+                            metadata_df.loc[site_id].get("provider_misc")
+                        )
+                        break # Success, exit retry loop
+                    
+                    except Exception as e:
+                        if attempt < max_retries - 1:
+                            sleep_time = base_delay * (2 ** attempt)
+                            logger.info(f"Error downloading {site_id}: {e}. Retrying in {sleep_time:.2f}s (Attempt {attempt + 1}/{max_retries})")
+                            await asyncio.sleep(sleep_time)
+                        else:
+                            logger.error(f"Failed to download {site_id} after {max_retries} attempts. Final error: {e}")
+                            return # Exit function, skipping processing for this site
 
             # Update timestamp regardless of data
             self.db_manager.update_last_fetched(site_id)
