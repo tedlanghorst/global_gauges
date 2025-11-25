@@ -1,20 +1,23 @@
 from abc import ABC, abstractmethod
 import asyncio
+import json
 from pathlib import Path
 import logging
 
 from tqdm.asyncio import tqdm
 import pandas as pd
+import polars as pl
 import geopandas as gpd
 from pydantic import ValidationError
 
-from ..database import QualityFlag, SiteMetadata, DischargeRecord, DatabaseManager
+from ..database import QualityFlag, SiteMetadata, ParquetManager
 
 # TODO Would be nice to request multiple sites, especially when updating the database with a short timespan.
 # I.e. 5000 single site queries for 7 days of data is kind of silly if we could do 50 queries for 100 sites * 7 days.
 # Some providers may not support multiple sites though and we would need to differentiate. Maybe intermediate classes
 # for apis that allow different types of queries? Maybe a subclass method that does the batching?
 
+logger = logging.getLogger(__name__)
 
 class BaseProvider(ABC):
     """
@@ -39,11 +42,7 @@ class BaseProvider(ABC):
         Args:
             data_dir: Base directory for all provider data
         """
-        self.db_manager = DatabaseManager(Path(data_dir), self.name)
-
-    def __del__(self):
-        """Ensure database connections are properly closed."""
-        self.db_manager.close_conn()
+        self.db_manager = ParquetManager(Path(data_dir), self.name)
 
     @classmethod
     def add_provider_prefix(cls, site_id: str | list[str]) -> str | list[str]:
@@ -73,67 +72,36 @@ class BaseProvider(ABC):
         Args:
             force_update: If True, re-download even if data exists
         """
-        # Check if we already have metadata and don't need to update
         if not force_update:
-            existing_metadata = self.db_manager.get_site_metadata()
-            if existing_metadata:
-                print(
-                    f"Station metadata already exists for {self.name.upper()}. "
-                    "Use force_update=True to re-download."
-                )
+            if not self.db_manager.get_site_metadata().is_empty():
+                print(f"Metadata exists for {self.name}. Use force_update=True to refresh.")
                 return
 
-        print(f"Downloading station information for {self.name.upper()}...")
+        print(f"Downloading station info for {self.name}...")
+        raw_df = self._download_station_info(api_key)
 
-        # Call provider-specific implementation
-        raw_metadata = self._download_station_info(api_key)
+        # Vectorized prefix addition
+        raw_df["site_id"] = self.add_provider_prefix(raw_df["site_id"].tolist())
 
-        # Convert DataFrame to a list of dictionaries for efficient validation
-        records_to_validate = raw_metadata.to_dict("records")
-
+        # Validate these records. 
+        # Convert to dicts once
+        records = raw_df.to_dict("records")
+        
         validated_models = []
-        invalid_count = 0
-        for record in records_to_validate:
+        invalid_count = 0  
+        for record in records:
             try:
-                # Add provider prefix before validation
-                record["site_id"] = self.add_provider_prefix(record["site_id"])
-
-                # Validate the dictionary directly into a Pydantic model
-                validated_model = SiteMetadata.model_validate(record)
-                validated_models.append(validated_model)
-
+                validated_models.append(SiteMetadata.model_validate(record))
             except ValidationError as e:
-                # If validation fails, we log the issue and skip this row.
                 invalid_count += 1
-                site_identifier = record.get("site_id", "N/A")
-
-                # Log all error details
-                for error in e.errors():
-                    field_path = ".".join(str(loc) for loc in error["loc"])
-                    invalid_value = record
-                    for loc in error["loc"]:
-                        if isinstance(invalid_value, dict) and loc in invalid_value:
-                            invalid_value = invalid_value[loc]
-                        else:
-                            invalid_value = "N/A"
-                            break
-
-                    logging.warning(
-                        f"Site '{site_identifier}' failed validation on field '{field_path}' "
-                        f"with value '{invalid_value}'. Reason: {error['msg']}"
-                    )
-                continue
+                logger.warning(f"Metadata validation failed: {e}")
 
         if validated_models:
             self.db_manager.store_site_metadata(validated_models)
-            for metadata in validated_models:
-                self.db_manager.update_site_statistics(metadata.site_id)
-            print(f"Stored metadata for {len(validated_models)} stations.")
+            print(f"[{self.name}]: Stored {len(validated_models)} stations.")
 
-        if invalid_count > 0:
-            print(
-                f"Removed {invalid_count} stations due to validation errors. See log for more info."
-            )
+        if invalid_count:
+            print(f"[{self.name}]: Skipped {invalid_count} invalid stations.")
 
     @abstractmethod
     def _download_station_info(self) -> pd.DataFrame:
@@ -151,24 +119,25 @@ class BaseProvider(ABC):
         pass
 
     def get_station_info(self, site_ids: list[str] | None = None) -> gpd.GeoDataFrame:
-        """
-        Get station metadata as GeoDataFrame.
-        """
-        metadata_list = self.db_manager.get_site_metadata(site_ids)
+        """Returns GeoDataFrame from Pydantic models (Fast enough for metadata)."""
+        pl_df = self.db_manager.get_site_metadata(site_ids)
 
-        if len(metadata_list) == 0:
+        if pl_df.is_empty():
             return None
 
-        # Convert to GeoDataFrame
-        data_for_gdf = []
-        geometries = []
+        # Convert to Pandas for GeoPandas compatibility
+        df = pl_df.to_pandas()
 
-        for metadata in metadata_list:
-            data_for_gdf.append(metadata.model_dump())
-            geometries.append(metadata.get_geometry())
+        # Parse provider_misc back to dict if needed, or leave as JSON string.
+        df["provider_misc"] = df["provider_misc"].apply(lambda x: json.loads(x) if x else None)
 
-        df = pd.DataFrame(data_for_gdf)
-        gdf = gpd.GeoDataFrame(df, geometry=geometries, crs="EPSG:4326")
+        # Create Geometry
+        gdf = gpd.GeoDataFrame(
+            df, 
+            geometry=gpd.points_from_xy(df.longitude, df.latitude), 
+            crs="EPSG:4326"
+        )
+        
         return gdf.set_index("site_id")
 
     def _get_sites_to_update(
@@ -185,27 +154,25 @@ class BaseProvider(ABC):
         # Determine which sites need updating
         today = pd.Timestamp.now().normalize()
         default_start = pd.Timestamp(1950, 1, 1).normalize()
-        sites_to_update = {}
 
+        to_update = {}
         for site in site_ids:
-            if force_update:
-                sites_to_update[site] = default_start
-            else:
-                # Check if site needs updating (no data or not updated today)
-                last_updated = pd.Timestamp(metadata.loc[site]["last_updated"])
-                if (last_updated is None) or (last_updated is pd.NaT):
-                    sites_to_update[site] = default_start
-                    continue
+            # specific check to ensure site exists in metadata
+            if site not in metadata.index:
+                continue
+                
+            last = metadata.loc[site, "last_updated"]
+            
+            if force_update or pd.isna(last):
+                to_update[site] = default_start
+            elif (today - pd.Timestamp(last)).days > tolerance:
+                to_update[site] = pd.Timestamp(last)
 
-                days_since_update = (today - last_updated).days
-                if days_since_update > tolerance:
-                    sites_to_update[site] = last_updated
-
-        if len(sites_to_update) == 0:
+        if not to_update: # Pythonic empty check
             print(f"All sites for {self.name.upper()} are up-to-date.")
-            return
+            return {} # Return empty dict instead of None to avoid TypeErrors later
 
-        return sites_to_update
+        return to_update
 
     async def download_daily_values(
         self,
@@ -220,93 +187,57 @@ class BaseProvider(ABC):
         Args:
             site_ids: Optional list of site IDs. If None, downloads for all sites.
         """
-        metadata = self.get_station_info()
-        if metadata is None:
-            raise ValueError("No station metadata available. Run download_station_info() first.")
+        metadata_df = self.get_station_info() # Returns GeoDataFrame
+        if metadata_df is None or metadata_df.empty:
+            raise ValueError("No metadata found.")
 
-        sites_to_update = self._get_sites_to_update(metadata, site_ids, tolerance, force_update)
-        if sites_to_update is None:
+        # Determine sites to update (Logic remains similar)
+        sites_to_update = self._get_sites_to_update(metadata_df, site_ids, tolerance, force_update)
+        if not sites_to_update:
             return
 
-        # This semaphore ensures only ONE _download_daily_values coroutine can run at a time.
-        semaphore = asyncio.Semaphore(1)
+        # This prevents us from hammering the API if we are already waiting on requests.
+        semaphore = asyncio.Semaphore(10) 
 
         async def dl_and_process(site_id, start_date):
-            """Worker task for a single site."""
             async with semaphore:
-                # Semaphore ensures only one task can enter this block at a time.
-                daily_data = await self._download_daily_values(
+                # Retrieve Pandas DataFrame from API
+                df = await self._download_daily_values(
                     self.remove_provider_prefix(site_id),
                     start_date,
                     api_key,
-                    metadata.loc[site_id]["provider_misc"],
+                    metadata_df.loc[site_id].get("provider_misc")
                 )
-            # Semaphore is RELEASED here. The event loop can now schedule the next download
-            # while we process and insert this data into database.
 
-            # Update last_updated timestamp regardless of whether data was found
-            self._update_last_fetched(site_id)
+            # Update timestamp regardless of data
+            self.db_manager.update_last_fetched(site_id)
 
-            # We're done with this site if we found nothing.
-            assert isinstance(daily_data, pd.DataFrame)  # Helps static type checker
-            if daily_data.empty:
+            if df.empty:
                 return
 
-            # Apply the provider-specific quality mapping.
-            daily_data["quality_flag"] = (
-                daily_data["quality_flag"].map(self.quality_map).fillna("unknown")
-            )
-            # Pre filter discharge to remove most validation errors.
-            daily_data = daily_data[daily_data["discharge"] > 0]
+            try:
+                pl_df = pl.from_pandas(df)
 
-            # Convert DataFrame to a list of dictionaries for efficient validation
-            records_to_validate = daily_data.to_dict("records")
+                # Add Site ID Column
+                pl_df = pl_df.with_columns(pl.lit(site_id).alias("site_id"))
 
-            discharge_records = []
-            invalid_count = 0
-            for record in records_to_validate:
-                try:
-                    # Use the prefixed site_id from the outer loop
-                    record["site_id"] = site_id
+                # Type Enforcement
+                pl_df = pl_df.select([
+                    pl.col("site_id").cast(pl.Utf8),
+                    pl.col("date").cast(pl.Date),
+                    pl.col("discharge").cast(pl.Float64),
+                    pl.col("quality_flag").cast(pl.Utf8)
+                ])
 
-                    # Validate the dictionary directly into a model
-                    validated_record = DischargeRecord.model_validate(record)
-                    discharge_records.append(validated_record)
-
-                except ValidationError as e:
-                    invalid_count += 1
-                    logging.warning(
-                        f"Discharge record for site '{site_id}' failed validation. "
-                        f"Data: {record}. Reason: {e.errors()[0]['msg']}"
-                    )
-                    continue
-
-            if discharge_records:
-                self.db_manager.store_discharge_data(discharge_records)
+                self.db_manager.store_discharge_dataframe(pl_df)
                 self.db_manager.update_site_statistics(site_id)
 
-            if invalid_count > 0:
-                warning_str = (
-                    f"Removed {invalid_count} entries from {site_id} due to validation errors."
-                )
-                logging.warning(warning_str)
+            except Exception as e:
+                logger.error(f"Error processing {site_id}: {e}")
 
-        # Create and run all tasks concurrently (again, semaphore prevents crushing the provider API)
-        tasks = [dl_and_process(site_id, start) for site_id, start in sites_to_update.items()]
-        await tqdm.gather(*tasks, desc=f"{self.name.upper()}: processing sites")
+        tasks = [dl_and_process(sid, start) for sid, start in sites_to_update.items()]
+        await tqdm.gather(*tasks, desc=f"Downloading {self.name}")
 
-    def _update_last_fetched(self, site_id: str):
-        """Update the last_updated timestamp for a site."""
-        conn = self.db_manager.get_conn(write=True)
-        conn.execute(
-            """
-            UPDATE site_metadata 
-            SET last_updated = ? 
-            WHERE site_id = ?
-        """,
-            (pd.Timestamp.now().date().isoformat(), site_id),
-        )
-        self.db_manager.close_conn()
 
     @abstractmethod
     async def _download_daily_values(self, site_id: str) -> pd.DataFrame:
@@ -338,24 +269,18 @@ class BaseProvider(ABC):
         Returns:
             DataFrame with discharge data, indexed by (site_id, date)
         """
-        records = self.db_manager.get_discharge_data(site_ids, start_date, end_date)
+        pl_df = self.db_manager.get_discharge_data(site_ids, start_date, end_date)
 
-        if not records:
+        if pl_df.is_empty():
             return pd.DataFrame()
-
-        # Convert to DataFrame
-        data_list = []
-        for record in records:
-            data_list.append(
-                {
-                    "site_id": record.site_id,
-                    "date": record.date,
-                    "discharge": record.discharge,
-                    "quality_flag": record.quality_flag,
-                }
+        
+        if self.quality_map:
+            pl_df = pl_df.with_columns(
+                pl.col("quality_flag")
+                .replace(self.quality_map, default="unknown")
             )
 
-        df = pd.DataFrame(data_list)
+        df = pl_df.to_pandas()
         return df.set_index(["site_id", "date"])
 
     def get_database_age_days(self) -> int:

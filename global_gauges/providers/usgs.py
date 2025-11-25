@@ -53,7 +53,7 @@ class USGSProvider(BaseProvider):
         # Now setup columns to match other sources
         sites = gpd.GeoDataFrame(sites).to_crs("EPSG:4326")
         sites["area"] = sites["drain_area_va"] * (1.60934**2)  # mi2 to km2
-        sites["active"] = sites["site_id"].isin(active_ids)
+        sites["active"] = sites["site_no"].isin(active_ids)
         sites["latitude"] = sites.geometry.y
         sites["longitude"] = sites.geometry.x
 

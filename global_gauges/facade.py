@@ -1,4 +1,5 @@
 import json
+import traceback
 import warnings
 import logging
 import asyncio
@@ -62,6 +63,13 @@ class ConfigManager:
         """Retrieves a provider API key from the config file."""
         config = self._read_config()
         return config.get(f"api_key_{provider}")
+    
+
+def si_worker_fn(provider: BaseProvider, force: bool, api_key: str):
+    provider.download_station_info(force, api_key)
+
+def dv_worker_fn(provider: BaseProvider, sites: list, tol: int, force: bool, key: str):
+    asyncio.run(provider.download_daily_values(sites, tol, force, key))
 
 
 class GaugeDataFacade:
@@ -151,9 +159,6 @@ class GaugeDataFacade:
         if providers:
             self.set_providers(providers)
 
-        def worker_fn(provider: BaseProvider, force: bool, api_key: str):
-            provider.download_station_info(force, api_key)
-
         args_iter = []
         for provider in self.providers.values():
             api_key = self.config.get_provider_key(provider.name)
@@ -163,7 +168,7 @@ class GaugeDataFacade:
 
             args_iter.append((provider, force_update, api_key))
 
-        self._run_workers(worker_fn, args_iter, workers)
+        self._run_workers(si_worker_fn, args_iter, workers)
 
     def download_daily_values(
         self,
@@ -178,9 +183,6 @@ class GaugeDataFacade:
 
         sites_dict = self._preprocess_sites(sites)
 
-        def worker_fn(provider: BaseProvider, sites: list, tol: int, force: bool, key: str):
-            asyncio.run(provider.download_daily_values(sites, tol, force, key))
-
         args_iter = []
         # sites_dict maps {provider_instance: list_of_sites}
         for provider, p_sites in sites_dict.items():
@@ -192,7 +194,7 @@ class GaugeDataFacade:
             # Add all arguments for the worker, including the api_key
             args_iter.append((provider, p_sites, tolerance, force_update, api_key))
 
-        self._run_workers(worker_fn, args_iter, workers)
+        self._run_workers(dv_worker_fn, args_iter, workers)
 
     def get_database_ages(self) -> dict[str, int]:
         ages = {name: provider.get_database_age_days() for name, provider in self.providers.items()}
@@ -202,10 +204,14 @@ class GaugeDataFacade:
         provider_info = []
         for name, provider in self.providers.items():
             p_stations = provider.get_station_info()
-            p_stations["provider"] = name
-            provider_info.append(p_stations)
+            if p_stations is not None:
+                p_stations["provider"] = name
+                provider_info.append(p_stations)
 
-        return pd.concat(provider_info)
+        if provider_info:
+            return pd.concat(provider_info)
+        else:
+            return gpd.GeoDataFrame()
 
     def get_active_stations(self) -> gpd.GeoDataFrame:
         gdf = self.get_station_info()
@@ -233,49 +239,41 @@ class GaugeDataFacade:
     @staticmethod
     def _validate_providers(providers: str | list[str] | set[str] | None) -> set[str]:
         # Accept None or empty list/set as 'all providers'
-        if providers is None or providers == [] or providers == set():
-            providers = set(PROVIDER_MAP.keys())
-        elif isinstance(providers, str):
+        valid = set(PROVIDER_MAP)
+
+        # covers None, empty list, empty set, and empty string 
+        if not providers:  
+            return valid
+
+        if isinstance(providers, str):
             providers = {providers}
-            missing = providers - set(PROVIDER_MAP)
-            if missing:
-                raise ValueError(f"Provider(s) {missing} not recognized.")
-        elif isinstance(providers, list):
+        elif isinstance(providers, (list, set)):
             providers = set(providers)
-            missing = providers - set(PROVIDER_MAP)
-            if missing:
-                raise ValueError(f"Provider(s) {missing} not recognized.")
-        elif isinstance(providers, set):
-            missing = providers - set(PROVIDER_MAP)
-            if missing:
-                raise ValueError(f"Provider(s) {missing} not recognized.")
         else:
-            raise TypeError("Providers must be of type None, str, list, or set.")
+            raise TypeError("Providers must be None, str, list, or set.")
+
+        missing = providers - valid
+        if missing:
+            raise ValueError(f"Provider(s) {missing} not recognized.")
 
         return providers
 
     def _run_workers(self, worker_fn, args_iter, workers):
         """Helper to run worker_fn over args_iter with optional threading."""
-        if workers > 1:
-            try:
-                with ThreadPoolExecutor(max_workers=workers) as executor:
-                    futures = [executor.submit(worker_fn, *args) for args in args_iter]
-                    for future in as_completed(futures):
-                        try:
-                            future.result()
-                        except Exception as exc:
-                            print(f"A provider download failed: {exc}")
-            except KeyboardInterrupt:
-                print("\nKeyboardInterrupt received. Attempting to shut down threads...")
-                executor.shutdown(wait=False, cancel_futures=True)
-                raise
-        else:
-            try:
-                for args in args_iter:
-                    worker_fn(*args)
-            except KeyboardInterrupt:
-                print("\nKeyboardInterrupt received. Exiting...")
-                raise
+        try:
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                futures = [executor.submit(worker_fn, *args) for args in args_iter]
+                for future in as_completed(futures):
+                    try:
+                        future.result()
+                    except Exception:
+                        print("A provider download failed:")
+                        traceback.print_exc()
+                        
+        except KeyboardInterrupt:
+            print("\nKeyboardInterrupt received. Attempting to shut down threads...")
+            executor.shutdown(wait=False, cancel_futures=True)
+            raise
 
     def _preprocess_sites(self, sites: str | list[str] | None) -> dict[BaseProvider, list[str]]:
         if sites is None:

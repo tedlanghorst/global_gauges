@@ -5,8 +5,9 @@ from typing import Optional, Any
 from enum import Enum
 
 from shapely.geometry import Point
-from pydantic import BaseModel, Field, field_validator, ConfigDict
+from pydantic import BaseModel, Field, field_validator, model_validator, ConfigDict
 
+logger = logging.getLogger(__name__)
 
 class QualityFlag(str, Enum):
     """
@@ -51,9 +52,9 @@ class SiteMetadata(BaseModel):
     max_date: Optional[datetime] = Field(None, description="Latest data date available")
 
     # Discharge statistics
-    min_discharge: Optional[float] = Field(None, description="Minimum discharge (m³/s)", ge=0)
-    max_discharge: Optional[float] = Field(None, description="Maximum discharge (m³/s)", ge=0)
-    mean_discharge: Optional[float] = Field(None, description="Mean discharge (m³/s)", ge=0)
+    min_discharge: Optional[float] = Field(None, description="Minimum discharge (m³/s)")
+    max_discharge: Optional[float] = Field(None, description="Maximum discharge (m³/s)")
+    mean_discharge: Optional[float] = Field(None, description="Mean discharge (m³/s)")
     count_discharge: Optional[int] = Field(None, description="Number of discharge records", ge=0)
 
     provider_misc: Optional[dict[str, Any]] = Field(
@@ -68,57 +69,24 @@ class SiteMetadata(BaseModel):
             return None
 
         # Handle negative numbers
-        if isinstance(v, (int, float)) and v < 0:
+        if isinstance(v, (int, float)) and v <= 0:
             # Log the bad data for monitoring purposes
-            logging.warning(
-                f"Negative area '{v}' encountered for site_id '{info.data.get('site_id', 'N/A')}'."
-            )
-            return None
-
-        return v
-
-    @field_validator("min_discharge", "max_discharge", "mean_discharge", mode="before")
-    @classmethod
-    def validate_positive_discharge(cls, v, info):
-        """Ensure discharge values are non-negative. Returns the value if valid."""
-        if isinstance(v, (int, float)) and v < 0:
-            # Log the bad data for monitoring purposes
-            logging.warning(
-                f"Negative discharge '{v}' encountered for site_id '{info.data.get('site_id', 'N/A')}'."
+            logger.warning(
+                f"Negative or zero area'{v}' encountered for site_id '{info.data.get('site_id', 'N/A')}'."
             )
             return None
         return v
+    
+    @model_validator(mode="after")
+    def validate_coordinates(self):
+        if self.latitude == 0 and self.longitude == 0:
+            logger.warning(
+                f"Invalid geometry (0,0) for site '{self.site_id}'. "
+                "This `null island` location usually indicates missing coordinate data."
+            )
+            raise ValueError("Invalid coordinates: latitude and longitude cannot both be zero.")
+        return self
 
     def get_geometry(self) -> Point:
         """Create a Shapely Point geometry from coordinates."""
         return Point(self.longitude, self.latitude)
-
-
-class DischargeRecord(BaseModel):
-    """
-    Pydantic model representing a single discharge measurement.
-
-    This model ensures all discharge data follows the same structure
-    and provides validation for data quality.
-    """
-
-    model_config = ConfigDict(use_enum_values=True, validate_assignment=True)
-
-    site_id: str = Field(..., description="Site identifier (with provider prefix)")
-    date: datetime = Field(..., description="Date of measurement")
-    discharge: float = Field(..., description="Discharge value in m³/s", ge=0)
-    quality_flag: Optional[QualityFlag] = Field(
-        QualityFlag.UNKNOWN, description="Data quality indicator"
-    )
-
-    @field_validator("discharge", mode="before")
-    @classmethod
-    def validate_discharge_positive(cls, v):
-        """Ensure discharge values are non-negative. Returns the value if valid."""
-        if isinstance(v, (int, float)) and v < 0:
-            # # Log the bad data for monitoring purposes
-            # logging.warning(
-            #     f"Negative discharge '{v}' encountered for site_id '{info.data.get('site_id', 'N/A')}'."
-            # )
-            return None
-        return v

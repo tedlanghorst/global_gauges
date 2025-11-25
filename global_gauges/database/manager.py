@@ -1,340 +1,287 @@
 import json
+import logging
 from pathlib import Path
 
-# from functools import wraps
+import polars as pl
+import pandas as pd 
+from .models import SiteMetadata
 
-import duckdb
-import pandas as pd
-
-from .models import SiteMetadata, DischargeRecord
-
-# def with_connection(write: bool = False):
-#     """
-#     A decorator to manage database connections for a method.
-
-#     Opens a connection before the method is called and ensures it's closed
-#     afterward. It passes the connection object as a 'conn' keyword
-#     argument to the decorated method.
-#     """
-#     def decorator(func: Callable) -> Callable:
-#         @wraps(func)
-#         def wrapper(self: 'DuckDBManager', *args: Any, **kwargs: Any) -> Any:
-#             # Get the appropriate connection
-#             conn = self.get_conn(write=write)
-#             try:
-#                 # Call the original method, passing the connection in
-#                 result = func(self, *args, conn=conn, **kwargs)
-#                 return result
-#             finally:
-#                 # Always close the connection
-#                 self.close_conn()
-#         return wrapper
-#     return decorator
+logger = logging.getLogger(__name__)
 
 
-class DatabaseManager:
+class ParquetManager:
     """
-    Handles all database operations using Pydantic models.
-
-    This class encapsulates all DuckDB operations and ensures
-    consistent use of Pydantic models throughout.
+    Handles database operations using Polars and Partitioned Parquet.
     """
 
     def __init__(self, data_dir: Path, provider_name: str):
-        # Create data directory
-        provider_data_dir = data_dir / provider_name
-        provider_data_dir.mkdir(parents=True, exist_ok=True)
+        self.base_path = data_dir / provider_name
+        self.metadata_path = self.base_path / "site_metadata" / "data.parquet"
+        self.discharge_path = self.base_path / "discharge"
 
-        self.database_path = provider_data_dir / f"{provider_name}.duckdb"
+        # Ensure directories exist
+        self.metadata_path.parent.mkdir(parents=True, exist_ok=True)
+        self.discharge_path.mkdir(parents=True, exist_ok=True)
 
-        self._write_conn: duckdb.DuckDBPyConnection | None = None
-        self._read_conn: duckdb.DuckDBPyConnection | None = None
+    # ==========================================
+    # METADATA OPERATIONS
+    # ==========================================
 
-        self._initialize_tables()
+    def store_site_metadata(self, metadata: list[SiteMetadata]):
+        """
+        Upserts metadata. Reads existing, filters out IDs being updated, appends new, writes back.
+        """
+        if not metadata:
+            return
 
-    def get_conn(self, write=True) -> duckdb.DuckDBPyConnection:
-        """Get database connection, creating if necessary."""
-        if write:
-            if self._write_conn:
-                return self._write_conn
-            else:
-                self.close_conn()  # In case _read_conn is open
-                self._write_conn = duckdb.connect(self.database_path)
-                return self._write_conn
+        # Serialize Pydantic to dicts
+        new_dicts = [m.model_dump() for m in metadata]
+        
+        # Serialize dict/JSON fields to strings for Parquet compatibility
+        for d in new_dicts:
+            if isinstance(d.get("provider_misc"), dict):
+                d["provider_misc"] = json.dumps(d["provider_misc"])
+        
+        new_df = pl.DataFrame(new_dicts)
+
+        if self.metadata_path.exists():
+            existing_df = pl.read_parquet(self.metadata_path)
+            updated_ids = new_df["site_id"].to_list()
+            # Remove rows that are about to be updated
+            existing_df = existing_df.filter(~pl.col("site_id").is_in(updated_ids))
+
+            # If existing_df has Null columns that new_df has types for, cast existing to match.
+            for col_name, new_dtype in new_df.schema.items():
+                if col_name in existing_df.columns:
+                    current_dtype = existing_df.schema[col_name]
+                    # If file has Null but we now have data, cast the file's column
+                    if current_dtype == pl.Null and new_dtype != pl.Null:
+                        existing_df = existing_df.with_columns(
+                            pl.col(col_name).cast(new_dtype)
+                        )
+
+            # Vertical concat
+            final_df = pl.concat([existing_df, new_df], how="vertical")
         else:
-            if self._read_conn:
-                return self._read_conn
-            else:
-                self.close_conn()  # In case _write_conn is open
-                self._read_conn = duckdb.connect(self.database_path, read_only=True)
-                return self._read_conn
+            final_df = new_df
 
-    def close_conn(self):
-        """Close database connection(s)."""
-        if self._write_conn:
-            self._write_conn.close()
-            self._write_conn = None
+        final_df = dedupe_metadata(final_df)
 
-        if self._read_conn:
-            self._read_conn.close()
-            self._read_conn = None
+        final_df.write_parquet(self.metadata_path)
 
-    def __del__(self):
-        """Ensure connection is closed when object is destroyed."""
-        self.close_conn()
+    def get_site_metadata(self, site_ids: list[str] | None = None) -> pl.DataFrame:
+        """Returns site metadata as polars dataframe"""
+        if not self.metadata_path.exists():
+            return pl.DataFrame()
 
-    def _initialize_tables(self):
-        """Create database tables if they don't exist."""
-        conn = self.get_conn(write=True)
-
-        # Create site_metadata table
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS site_metadata (
-                site_id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                area DOUBLE,
-                active BOOLEAN NOT NULL DEFAULT TRUE,
-                latitude DOUBLE NOT NULL,
-                longitude DOUBLE NOT NULL,
-                last_updated TIMESTAMP,
-                min_date DATE,
-                max_date DATE,
-                min_discharge DOUBLE,
-                max_discharge DOUBLE,
-                mean_discharge DOUBLE,
-                count_discharge BIGINT,
-                provider_misc JSON
-            )
-        """)
-
-        # Create discharge table
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS discharge (
-                site_id TEXT NOT NULL,
-                date DATE NOT NULL,
-                discharge DOUBLE NOT NULL,   
-                quality_flag TEXT,
-                PRIMARY KEY (site_id, date)
-            )
-        """)
-
-        # Create indexes for better performance
-        conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_discharge_site_date 
-            ON discharge(site_id, date)
-        """)
-        conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_metadata_active 
-            ON site_metadata(active)
-        """)
-
-        self.close_conn()
-
-    def store_site_metadata(self, metadata: SiteMetadata | list[SiteMetadata]):
-        """
-        Store site metadata in database.
-
-        Args:
-            metadata: Single SiteMetadata object or list of SiteMetadata objects
-        """
-        conn = self.get_conn(write=True)
-
-        if isinstance(metadata, SiteMetadata):
-            metadata = [metadata]
-
-        # Convert Pydantic models to DataFrames for bulk insert
-        data_dicts = [site.model_dump() for site in metadata]
-        df = pd.DataFrame(data_dicts)
-
-        # DuckDB requires a proper JSON string, not a Python dict's string representation.
-        if "provider_misc" in df.columns:
-            df["provider_misc"] = df["provider_misc"].apply(
-                lambda x: json.dumps(x) if isinstance(x, dict) else None
-            )
-
-        # Register DataFrame and insert
-        conn.register("metadata_temp", df)
-        conn.execute("""
-            INSERT OR REPLACE INTO site_metadata
-            SELECT * FROM metadata_temp
-        """)
-
-        self.close_conn()
-
-    def get_site_metadata(self, site_ids: list[str] | None = None) -> list[SiteMetadata]:
-        """
-        Retrieve site metadata from database.
-
-        Args:
-            site_ids: Optional list of site IDs to filter by
-
-        Returns:
-            List of SiteMetadata objects
-        """
-        conn = self.get_conn(write=False)
+        # Eager read required if we might overwrite later, but scan is fine for read-only
+        # Using scan for performance
+        q = pl.scan_parquet(self.metadata_path)
 
         if site_ids:
-            placeholders = ",".join(["?"] * len(site_ids))
-            query = f"SELECT * FROM site_metadata WHERE site_id IN ({placeholders})"
-            df = conn.execute(query, site_ids).fetchdf()
-        else:
-            df = conn.execute("SELECT * FROM site_metadata").fetchdf()
+            q = q.filter(pl.col("site_id").is_in(site_ids))
 
-        # Convert DataFrame rows to Pydantic models
-        metadata_list = []
-        for _, row in df.iterrows():
-            # Convert row to dict and handle NaN values
-            row_dict = row.to_dict()
-            row_dict = {k: (None if pd.isna(v) else v) for k, v in row_dict.items()}
+        return q.collect()
 
-            # Parse the provider misc json data
-            if "provider_misc" in row_dict and isinstance(row_dict["provider_misc"], str):
-                try:
-                    row_dict["provider_misc"] = json.loads(row_dict["provider_misc"])
-                except json.JSONDecodeError:
-                    # Handle cases where the string is not valid JSON
-                    row_dict["provider_misc"] = None
+    # ==========================================
+    # DISCHARGE OPERATIONS (The Big Data)
+    # ==========================================
 
-            metadata_list.append(SiteMetadata(**row_dict))
-
-        self.close_conn()
-
-        return metadata_list
-
-    def store_discharge_data(self, records: DischargeRecord | list[DischargeRecord]):
+    def store_discharge_dataframe(self, df: pl.DataFrame):
         """
-        Store discharge records in database.
-
-        Args:
-            records: Single DischargeRecord or list of DischargeRecord objects
+        Writes discharge data using Hive Partitioning.
+        Folder structure: discharge/site_id=XYZ/data.parquet
+        Performs per-site upsert (Read -> Concat -> Dedup -> Write).
         """
-        conn = self.get_conn(write=True)
+        if df.is_empty():
+            return
 
-        if isinstance(records, DischargeRecord):
-            records = [records]
+        # 1. Enforce Schema/Types
+        # This prevents schema mismatch errors when appending to existing files
+        df = df.select([
+            pl.col("site_id").cast(pl.Utf8),
+            pl.col("date").cast(pl.Date),
+            pl.col("discharge").cast(pl.Float64),
+            pl.col("quality_flag").cast(pl.Utf8)
+        ])
 
-        # Convert to DataFrame for bulk insert
-        data_dicts = [record.model_dump() for record in records]
-        df = pd.DataFrame(data_dicts)
+        # 2. Partition Write Loop
+        # We iterate sites because we need to lock/rewrite specific files
+        site_ids = df["site_id"].unique().to_list()
 
-        # Register and insert
-        conn.register("discharge_temp", df)
-        conn.execute("""
-            INSERT OR REPLACE INTO discharge
-            SELECT * FROM discharge_temp
-        """)
+        for site in site_ids:
+            # Filter just this site's new data
+            new_site_data = df.filter(pl.col("site_id") == site)
+            
+            # Define path: discharge/site_id=XYZ/data.parquet
+            site_folder = self.discharge_path / f"site_id={site}"
+            site_folder.mkdir(exist_ok=True)
+            file_path = site_folder / "data.parquet"
 
-        self.close_conn()
+            if file_path.exists():
+                # Read existing
+                existing_data = pl.read_parquet(file_path)
+                
+                # Concat
+                combined = pl.concat([existing_data, new_site_data])
+                
+                # Dedup: If we have the same date twice, keep the NEW one (last)
+                # Sort by date for read performance later
+                combined = combined.unique(subset=["date"], keep="last").sort("date")
+                
+                combined.write_parquet(file_path)
+            else:
+                # No existing file, just write sorted data
+                new_site_data.sort("date").write_parquet(file_path)
 
+    def get_discharge_lazy(self) -> pl.LazyFrame:
+        """
+        Returns a LazyFrame of the entire dataset. 
+        Useful for analytical queries without loading memory.
+        """
+        # hive_partitioning=True auto-discovers 'site_id' from folder names
+        return pl.scan_parquet(self.discharge_path / "**/*.parquet", hive_partitioning=True)
+    
+    
     def get_discharge_data(
-        self, site_ids: list[str], start_date: str | None = None, end_date: str | None = None
-    ) -> list[DischargeRecord]:
+        self, 
+        site_ids: list[str], 
+        start_date: str | None = None, 
+        end_date: str | None = None
+    ) -> pl.DataFrame:
         """
-        Retrieve discharge data from database.
-
-        Args:
-            site_ids: List of site IDs to query
-            start_date: Optional start date (YYYY-MM-DD)
-            end_date: Optional end date (YYYY-MM-DD)
-
-        Returns:
-            List of DischargeRecord objects
+        Eagerly fetches data for specific sites as a Polars DataFrame.
         """
-        conn = self.get_conn(write=False)
+        q = self.get_discharge_lazy()
 
-        # Build query with optional date filters
-        clauses = []
-        params = []
-
-        if site_ids:
-            placeholders = ",".join(["?"] * len(site_ids))
-            clauses.append(f"site_id IN ({placeholders})")
-            params.extend(site_ids)
+        # Filter Pushdown: Only opens relevant folders
+        q = q.filter(pl.col("site_id").is_in(site_ids))
 
         if start_date:
-            clauses.append("date >= ?")
-            params.append(start_date)
-
+            q = q.filter(pl.col("date") >= pl.lit(start_date).cast(pl.Date))
         if end_date:
-            clauses.append("date <= ?")
-            params.append(end_date)
+            q = q.filter(pl.col("date") <= pl.lit(end_date).cast(pl.Date))
 
-        where_clause = "WHERE " + " AND ".join(clauses) if clauses else ""
-        query = f"SELECT * FROM discharge {where_clause} ORDER BY site_id, date"
-
-        df = conn.execute(query, params).fetchdf()
-
-        # Convert to Pydantic models
-        records = []
-        for _, row in df.iterrows():
-            row_dict = row.to_dict()
-            # Handle NaN values and ensure proper date parsing
-            row_dict = {k: (None if pd.isna(v) else v) for k, v in row_dict.items()}
-            if row_dict["date"]:
-                row_dict["date"] = pd.to_datetime(row_dict["date"])
-            records.append(DischargeRecord(**row_dict))
-
-        self.close_conn()
-
-        return records
+        return q.collect()
 
     def update_site_statistics(self, site_id: str):
         """
-        Calculate and update discharge statistics for a site.
-
-        Args:
-            site_id: Site identifier to update statistics for
+        Calculates stats from Parquet and updates the Metadata file.
+        Refactored to reuse store_site_metadata logic.
         """
-        conn = self.get_conn(write=True)
+        site_file = self.discharge_path / f"site_id={site_id}" / "data.parquet"
 
-        # Calculate statistics from discharge data
-        stats_df = conn.execute(
-            """
-            SELECT
-                site_id,
-                MIN(date) as min_date,
-                MAX(date) as max_date,
-                MIN(discharge) as min_discharge,
-                MAX(discharge) as max_discharge,
-                AVG(discharge) as mean_discharge,
-                COUNT(discharge) as count_discharge
-            FROM discharge
-            WHERE site_id = ?
-            GROUP BY site_id
-        """,
-            (site_id,),
-        ).fetchdf()
-
-        if stats_df.empty:
-            self.close_conn()
+        if not site_file.exists():
+            logger.warning(f"Tried to update site statistics, but no data file found for {site_id}")
             return
 
-        stats_row = stats_df.iloc[0]
+        # Compute stats
+        stats = pl.scan_parquet(site_file).select([
+            pl.min("date").alias("min_date"),
+            pl.max("date").alias("max_date"),
+            pl.min("discharge").alias("min_discharge"),
+            pl.max("discharge").alias("max_discharge"),
+            pl.mean("discharge").alias("mean_discharge"),
+            pl.len().alias("count_discharge")
+        ]).collect()
 
-        # Update metadata table
-        conn.execute(
-            """
-            UPDATE site_metadata 
-            SET 
-                min_date = ?,
-                max_date = ?,
-                min_discharge = ?,
-                max_discharge = ?,
-                mean_discharge = ?,
-                count_discharge = ?,
-                last_updated = ?
-            WHERE site_id = ?
-        """,
-            (
-                stats_row["min_date"],
-                stats_row["max_date"],
-                float(stats_row["min_discharge"]),
-                float(stats_row["max_discharge"]),
-                float(stats_row["mean_discharge"]),
-                int(stats_row["count_discharge"]),
-                pd.Timestamp.now().date().isoformat(),
-                site_id,
-            ),
+        if stats.height == 0:
+            return
+
+        row = stats.row(0, named=True)
+
+        # Fetch existing metadata to preserve other fields (like name, coords, etc.)
+        current_meta_df = self.get_site_metadata([site_id])
+        
+        if current_meta_df.height > 0:
+            # Convert existing Polars row to Dict
+            # We must reconstruct the Pydantic model to merge safely
+            # Assuming SiteMetadata handles extra fields or defaults
+            meta_dict = current_meta_df.to_dicts()[0]
+        else:
+            # Create fresh dict if it doesn't exist
+            meta_dict = {"site_id": site_id}
+
+        # Update stats fields
+        meta_dict.update({
+            "min_date": row["min_date"],
+            "max_date": row["max_date"],
+            "min_discharge": row["min_discharge"],
+            "max_discharge": row["max_discharge"],
+            "mean_discharge": row["mean_discharge"],
+            "count_discharge": row["count_discharge"],
+            "last_updated": pd.Timestamp.now()
+        })
+
+        # Re-serialize JSON string fields back to dict if needed by Pydantic validation
+        # (If your Pydantic model expects a dict but Parquet gave a string)
+        if isinstance(meta_dict.get("provider_misc"), str):
+             try:
+                 meta_dict["provider_misc"] = json.loads(meta_dict["provider_misc"])
+             except:
+                 meta_dict["provider_misc"] = {}
+
+        # Instantiate Pydantic Model
+        try:
+            site_obj = SiteMetadata(**meta_dict)
+            # Use the existing upsert function
+            self.store_site_metadata([site_obj])
+        except Exception as e:
+            logger.error(f"Failed to update metadata model for {site_id}: {e}")
+
+    def update_last_fetched(self, site_id: str):
+        if not self.metadata_path.exists():
+            return
+
+        df = pl.read_parquet(self.metadata_path)
+
+        df = df.with_columns(
+            pl.when(pl.col("site_id") == site_id)
+            .then(pl.lit(pd.Timestamp.now())) 
+            .otherwise(pl.col("last_updated"))
+            .alias("last_updated")
         )
 
-        self.close_conn()
+        df.write_parquet(self.metadata_path)
+
+
+def dedupe_metadata(df: pl.DataFrame) -> pl.DataFrame:
+    """
+    Deduplicate metadata in two steps:
+      1. Remove exact duplicate rows
+      2. Remove duplicate site_id entries (keeping first)
+
+    Logs info/warning messages and logged removed rows.
+    """
+
+    # ========== STEP 1 — Exact duplicate removal ==========
+    df_exact = df.unique(keep="first")
+
+    # ========== STEP 2 — Duplicate site_id removal ==========
+    before_site = df_exact.height
+    df_site = df_exact.unique(subset=["site_id"], keep="first")
+    site_removed = before_site - df_site.height
+
+    if site_removed > 0:
+        logger.warning(
+            f"Removed {site_removed} duplicate site_id entries (kept first)."
+        )
+
+        dup_ids = (
+            df_exact
+            .group_by("site_id")
+            .count()
+            .filter(pl.col("count") > 1)
+            .get_column("site_id")
+            .to_list()
+        )
+        logger.warning(
+            f"Duplicate site_ids removed: {dup_ids}"
+        )
+
+        logger.warning(
+            "Rows associated with these duplicate site_ids:\n"
+            f"{df_exact.filter(pl.col('site_id').is_in(dup_ids))}"
+        )
+
+    return df_site

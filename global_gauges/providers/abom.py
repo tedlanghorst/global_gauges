@@ -102,4 +102,4 @@ class ABoMProvider(BaseProvider):
                 )
                 df["site_id"] = site_id
 
-                return df
+                return df[["site_id", "date", "discharge", "quality_flag"]]

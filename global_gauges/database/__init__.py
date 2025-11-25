@@ -1,4 +1,4 @@
-from .manager import DatabaseManager
-from .models import QualityFlag, SiteMetadata, DischargeRecord
+from .manager import ParquetManager
+from .models import QualityFlag, SiteMetadata
 
-__all__ = ["DatabaseManager", "QualityFlag", "SiteMetadata", "DischargeRecord"]
+__all__ = ["ParquetManager", "QualityFlag", "SiteMetadata"]
